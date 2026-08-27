@@ -30,14 +30,18 @@ jobs:
           unzip -q /tmp/psa_sniper.zip -d /tmp/release
           test -f /tmp/release/psa_sniper_free_v1.0.0/README.md
           test -f /tmp/release/psa_sniper_free_v1.0.0/.github/workflows/sniper.yml
+          test -f /tmp/release/psa_sniper_free_v1.0.0/.github/workflows/tests.yml
 
       - name: Projekt installieren
         shell: bash
         run: |
           set -euo pipefail
           cp -a /tmp/release/psa_sniper_free_v1.0.0/. ./
+          # Workflow-Dateien werden anschließend über die verbundene GitHub-App angelegt.
+          # Das normale GITHUB_TOKEN darf aus Sicherheitsgründen keine Workflows erzeugen.
+          git checkout -- .github/workflows/bootstrap.yml
+          rm -f .github/workflows/sniper.yml .github/workflows/tests.yml
           rm -rf .bootstrap
-          rm -f .github/workflows/bootstrap.yml
           chmod +x scripts/persist_state.sh scripts/restore_state.sh
 
       - name: Projektstruktur prüfen
@@ -54,8 +58,8 @@ jobs:
               Path("README.md"),
               Path("psa_sniper/scanner.py"),
               Path("site/template/index.html"),
-              Path(".github/workflows/sniper.yml"),
-              Path(".github/workflows/tests.yml"),
+              Path("scripts/persist_state.sh"),
+              Path("scripts/restore_state.sh"),
           ]
           missing = [str(p) for p in required if not p.exists()]
           if missing:
@@ -70,5 +74,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
+          git diff --cached -- .github/workflows/ && { echo "Workflow-Diff erkannt"; git diff --cached -- .github/workflows/; exit 1; } || true
           git commit -m "Install PSA Sniper Free 1.0.0"
           git push origin HEAD:main
