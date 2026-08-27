@@ -1,0 +1,99 @@
+from datetime import datetime, timezone
+
+from psa_sniper.models import Listing, MarketValue, Money, PSACertInfo
+from psa_sniper.scoring import score_hit
+
+
+def _cert() -> PSACertInfo:
+    return PSACertInfo(
+        cert_number="67205095",
+        valid=True,
+        grade="GEM MT 10",
+        year="2021",
+        brand_title="TOPPS CHROME BUNDESLIGA",
+        subject="TAIWO AWONIYI",
+        card_number="16",
+        variety="X-FRACTOR",
+        population=2,
+        population_higher=0,
+    )
+
+
+def test_low_pop_information_gap_scores_as_hit_and_uses_shipping():
+    listing = Listing(
+        item_id="v1|123|0",
+        title="2021 Bundesliga PSA 10 #16",
+        url="https://www.ebay.de/itm/123",
+        price=Money(45, "EUR"),
+        shipping=Money(5, "EUR"),
+        created_at=datetime.now(timezone.utc),
+        buying_options=["FIXED_PRICE"],
+    )
+    hit = score_hit(
+        listing,
+        cert_number="67205095",
+        cert_source="Item-Specifics",
+        cert_confidence=1.0,
+        cert=_cert(),
+        market_value_listing_currency=MarketValue(Money(100, "EUR"), "Sales", "hoch", 3),
+        priority_terms=[],
+        demand_terms=[],
+    )
+    assert hit.score >= 20
+    assert hit.discount_pct == 0.5
+    assert any("population" in reason.casefold() for reason in hit.reasons)
+    assert any("variante" in reason.casefold() for reason in hit.reasons)
+
+
+def test_pure_auction_does_not_receive_discount_points():
+    listing = Listing(
+        item_id="auction",
+        title="2021 Bundesliga PSA 10 #16",
+        url="https://www.ebay.de/itm/456",
+        price=Money(1, "EUR"),
+        created_at=datetime.now(timezone.utc),
+        buying_options=["AUCTION"],
+    )
+    hit = score_hit(
+        listing,
+        cert_number="67205095",
+        cert_source="Titel",
+        cert_confidence=.97,
+        cert=_cert(),
+        market_value_listing_currency=MarketValue(Money(100, "EUR"), "Sales", "hoch", 3),
+    )
+    assert hit.discount_pct is None
+    assert any("auktion" in warning.casefold() for warning in hit.warnings)
+
+
+def test_untrusted_ocr_cert_cannot_create_fake_low_pop_discount_hit():
+    listing = Listing(
+        item_id="ocr-mismatch",
+        title="Completely Different Soccer Card PSA 10",
+        url="https://www.ebay.de/itm/789",
+        price=Money(10, "EUR"),
+        created_at=datetime.now(timezone.utc),
+        buying_options=["FIXED_PRICE"],
+    )
+    unrelated = PSACertInfo(
+        cert_number="11112222",
+        valid=True,
+        grade="10",
+        year="1999",
+        brand_title="POKEMON JAPANESE PROMO",
+        subject="PIKACHU",
+        card_number="25",
+        variety="HOLO",
+        population=1,
+    )
+    hit = score_hit(
+        listing,
+        cert_number="11112222",
+        cert_source="OCR (Fallback)",
+        cert_confidence=0.55,
+        cert=unrelated,
+        market_value_listing_currency=MarketValue(Money(500, "EUR"), "Sales", "hoch", 5),
+    )
+    assert not hit.cert_trusted
+    assert hit.discount_pct is None
+    assert any("ocr-cert" in warning.casefold() for warning in hit.warnings)

@@ -1,0 +1,21 @@
+{
+  "terms": [
+    "Pokemon",
+    "One Piece Card Game",
+    "Topps Chrome",
+    "Panini Prizm"
+  ],
+  "patterns": [
+    "PSA 10 {term}",
+    "PSA10 {term}",
+    "GEM MT 10 {term}",
+    "PSA GEM {term}",
+    "PSA graded 10 {term}"
+  ],
+  "extra_queries": [
+    "PSA 10 promo",
+    "PSA 10 refractor",
+    "PSA 10 rookie",
+    "PSA 10 parallel"
+  ]
+}

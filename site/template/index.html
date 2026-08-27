@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https: data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'">
+  <title>PSA Sniper</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="manifest" href="manifest.webmanifest">
+</head>
+<body>
+  <div class="ambient ambient-a"></div>
+  <div class="ambient ambient-b"></div>
+
+  <main class="shell">
+    <section id="lockView" class="lock-card" aria-labelledby="lockTitle">
+      <div class="brand-mark" aria-hidden="true">PSA</div>
+      <p class="eyebrow">VERSCHLÜSSELTES DASHBOARD</p>
+      <h1 id="lockTitle">Deine Hits bleiben privat.</h1>
+      <p class="muted">Die Trefferdatei liegt verschlüsselt auf GitHub Pages. Das Passwort wird nur in diesem Browser-Tab zur Entschlüsselung verwendet.</p>
+      <form id="unlockForm" class="unlock-form">
+        <label for="password">Dashboard-Passwort</label>
+        <div class="password-row">
+          <input id="password" name="password" type="password" autocomplete="current-password" minlength="16" required autofocus>
+          <button type="submit" class="primary">Entsperren</button>
+        </div>
+        <p id="unlockError" class="error" role="alert" aria-live="polite"></p>
+      </form>
+      <p class="security-note">Das Passwort wird nicht gespeichert. Nach einem Neuladen musst du es erneut eingeben.</p>
+    </section>
+
+    <section id="dashboardView" class="dashboard hidden" aria-live="polite">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">PSA 10 · LOW POP · INFORMATION GAP</p>
+          <h1>PSA Sniper</h1>
+          <p id="updatedAt" class="muted compact"></p>
+        </div>
+        <div class="top-actions">
+          <span id="runHealth" class="health-pill">Noch kein Lauf</span>
+          <button id="lockButton" class="secondary" type="button">Sperren</button>
+        </div>
+      </header>
+
+      <section id="stats" class="stats-grid" aria-label="Kennzahlen"></section>
+
+      <section class="control-panel" aria-label="Treffer filtern">
+        <div class="control-row grow-row">
+          <label class="search-field">
+            <span>Suche</span>
+            <input id="searchInput" type="search" placeholder="Pikachu, Prizm, #227 …">
+          </label>
+          <label>
+            <span>Min. Score</span>
+            <input id="minScore" type="number" min="0" max="50" value="7">
+          </label>
+          <label>
+            <span>Max. POP</span>
+            <input id="maxPop" type="number" min="1" placeholder="alle">
+          </label>
+          <label>
+            <span>Max. Gesamtpreis</span>
+            <input id="maxPrice" type="number" min="0" placeholder="alle">
+          </label>
+          <label>
+            <span>Sortierung</span>
+            <select id="sortSelect">
+              <option value="newest">Neueste zuerst</option>
+              <option value="score">Höchster Score</option>
+              <option value="pop">Niedrigste POP</option>
+              <option value="discount">Größter Abstand</option>
+              <option value="price">Niedrigster Preis</option>
+            </select>
+          </label>
+        </div>
+        <div class="chip-row" id="viewChips" role="group" aria-label="Trefferart">
+          <button class="chip active" data-view="all" type="button">Alle</button>
+          <button class="chip" data-view="hits" type="button">🔥 Hits</button>
+          <button class="chip" data-view="watch" type="button">Beobachtung</button>
+          <button class="chip" data-view="fixed" type="button">Sofortkauf</button>
+          <button class="chip" data-view="auction" type="button">Auktion</button>
+        </div>
+        <div class="chip-row" id="statusChips" role="group" aria-label="Eigener Status">
+          <button class="chip active" data-status="all" type="button">Alle Status</button>
+          <button class="chip" data-status="saved" type="button">★ Gespeichert</button>
+          <button class="chip" data-status="bought" type="button">✓ Gekauft</button>
+          <button class="chip" data-status="ignored" type="button">Ausgeblendet</button>
+        </div>
+      </section>
+
+      <div class="result-bar">
+        <p id="resultCount">0 Treffer</p>
+        <button id="resetFilters" class="text-button" type="button">Filter zurücksetzen</button>
+      </div>
+
+      <section id="hitGrid" class="hit-grid" aria-label="Treffer"></section>
+      <section id="emptyState" class="empty hidden">
+        <div class="empty-icon">◎</div>
+        <h2>Keine Treffer für diesen Filter</h2>
+        <p>Filter zurücksetzen oder auf den nächsten Scanner-Lauf warten.</p>
+      </section>
+
+      <details class="runs-panel">
+        <summary>Letzte Scanner-Läufe</summary>
+        <div id="runsTable" class="runs-table"></div>
+      </details>
+
+      <footer>
+        <p>Score und Preisindikatoren sind Screening-Signale, keine Wertgarantie. Cert, Listing, Verkäufer und echte Verkäufe vor dem Kauf selbst prüfen.</p>
+      </footer>
+    </section>
+  </main>
+
+  <script src="app.js" defer></script>
+</body>
+</html>
