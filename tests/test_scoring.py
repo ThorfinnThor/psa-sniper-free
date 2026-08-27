@@ -97,3 +97,28 @@ def test_untrusted_ocr_cert_cannot_create_fake_low_pop_discount_hit():
     assert not hit.cert_trusted
     assert hit.discount_pct is None
     assert any("ocr-cert" in warning.casefold() for warning in hit.warnings)
+
+
+def test_high_confidence_overpriced_listing_is_hard_gated_below_dashboard_threshold():
+    listing = Listing(
+        item_id="overpriced",
+        title="2021 Bundesliga PSA 10 #16",
+        url="https://www.ebay.de/itm/999",
+        price=Money(275, "EUR"),
+        shipping=Money(5, "EUR"),
+        created_at=datetime.now(timezone.utc),
+        buying_options=["FIXED_PRICE"],
+    )
+    hit = score_hit(
+        listing,
+        cert_number="67205095",
+        cert_source="OCR (Fallback)",
+        cert_confidence=0.95,
+        cert=_cert(),
+        market_value_listing_currency=MarketValue(Money(100, "EUR"), "PSA Sales", "hoch", 5),
+        priority_terms=[],
+        demand_terms=[],
+    )
+    assert hit.discount_pct == -1.8
+    assert hit.score <= 5
+    assert any("über dem preisindikator" in warning.casefold() for warning in hit.warnings)
