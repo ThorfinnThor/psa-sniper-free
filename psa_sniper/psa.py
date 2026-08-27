@@ -35,13 +35,17 @@ class PSAClient:
         self.delay_seconds = max(0.0, delay_seconds)
         self.max_calls = max_calls
         self.calls_made = 0
+        self.rate_limited = False
         self.session = requests.Session()
+        # Do not retry HTTP 429. A PSA rate limit should disable PSA enrichment
+        # for the remainder of this run rather than immediately hammering the
+        # same endpoint again. Transient server/network errors may still retry.
         retry = Retry(
             total=2,
             connect=2,
             read=2,
             backoff_factor=1.0,
-            status_forcelist=(429, 500, 502, 503, 504),
+            status_forcelist=(500, 502, 503, 504),
             allowed_methods=frozenset({"GET"}),
             respect_retry_after_header=True,
         )
@@ -60,12 +64,21 @@ class PSAClient:
         if self.delay_seconds:
             time.sleep(self.delay_seconds)
 
+    def _disable_after_rate_limit(self) -> None:
+        self.rate_limited = True
+        # Both PSA surfaces can share anti-abuse/rate-limit infrastructure.
+        # Stop all PSA enrichment for this run; the eBay scan must continue.
+        self.access_token = None
+        self.web_fallback = False
+
     def get_cert(self, cert_number: str) -> PSACertInfo | None:
+        if self.rate_limited:
+            return None
         if self.access_token:
             info = self._get_api(cert_number)
             if info and info.valid:
                 return info
-        if self.web_fallback:
+        if self.web_fallback and not self.rate_limited:
             info = self._get_web(cert_number)
             if info and info.valid:
                 return info
@@ -73,17 +86,27 @@ class PSAClient:
 
     def _get_api(self, cert_number: str) -> PSACertInfo | None:
         self._spend_call()
-        response = self.session.get(
-            PSA_API_URL.format(cert=cert_number),
-            headers={"Authorization": f"bearer {self.access_token}", "Accept": "application/json"},
-            timeout=30,
-        )
+        try:
+            response = self.session.get(
+                PSA_API_URL.format(cert=cert_number),
+                headers={"Authorization": f"bearer {self.access_token}", "Accept": "application/json"},
+                timeout=30,
+            )
+        except requests.RequestException:
+            # PSA enrichment is optional. Connectivity/retry failures must not
+            # abort the eBay scan. Disable the API token for this run and allow
+            # the public web fallback to be attempted once if configured.
+            self.access_token = None
+            return None
         if response.status_code in {401, 403}:
             # Disable a rejected token for the remainder of this run so the web fallback
             # does not spend two calls for every candidate.
             self.access_token = None
             return None
-        if response.status_code in {404, 429} or response.status_code >= 500:
+        if response.status_code == 429:
+            self._disable_after_rate_limit()
+            return None
+        if response.status_code == 404 or response.status_code >= 500:
             return None
         if response.status_code >= 400:
             return None
@@ -99,8 +122,21 @@ class PSAClient:
     def _get_web(self, cert_number: str) -> PSACertInfo | None:
         self._spend_call()
         url = PSA_CERT_URL.format(cert=cert_number)
-        response = self.session.get(url, timeout=30, allow_redirects=True)
-        if response.status_code in {403, 404, 429} or response.status_code >= 500:
+        try:
+            response = self.session.get(url, timeout=30, allow_redirects=True)
+        except requests.RequestException as exc:
+            # urllib3 can surface repeated 429 responses as a requests RetryError /
+            # ConnectionError before a Response object reaches us. Treat that as
+            # optional PSA enrichment failure, never as a fatal scanner error.
+            if "429" in str(exc) or "too many 429" in str(exc).lower():
+                self._disable_after_rate_limit()
+            else:
+                self.web_fallback = False
+            return None
+        if response.status_code == 429:
+            self._disable_after_rate_limit()
+            return None
+        if response.status_code in {403, 404} or response.status_code >= 500:
             return None
         if response.status_code >= 400:
             return None
