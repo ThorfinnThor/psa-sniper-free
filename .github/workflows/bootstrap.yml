@@ -74,6 +74,10 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git diff --cached -- .github/workflows/ && { echo "Workflow-Diff erkannt"; git diff --cached -- .github/workflows/; exit 1; } || true
+          if ! git diff --cached --quiet -- .github/workflows/; then
+            echo "::error::Unerwarteter Workflow-Diff im Bootstrap-Commit"
+            git diff --cached -- .github/workflows/
+            exit 1
+          fi
           git commit -m "Install PSA Sniper Free 1.0.0"
           git push origin HEAD:main
