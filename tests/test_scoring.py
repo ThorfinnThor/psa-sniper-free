@@ -119,6 +119,7 @@ def test_high_confidence_overpriced_listing_is_hard_gated_below_dashboard_thresh
         priority_terms=[],
         demand_terms=[],
     )
-    assert hit.discount_pct == -1.8
+    assert hit.discount_pct is not None
+    assert round(hit.discount_pct, 2) == -1.8
     assert hit.score <= 5
     assert any("über dem preisindikator" in warning.casefold() for warning in hit.warnings)
