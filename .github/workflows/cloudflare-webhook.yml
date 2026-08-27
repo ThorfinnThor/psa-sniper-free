@@ -1,5 +1,6 @@
 name: Deploy eBay Webhook to Cloudflare
 
+# Triggered after webhook secrets are configured.
 on:
   workflow_dispatch:
   push:
