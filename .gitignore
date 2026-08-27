@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Secrets / local environment
+.env
+.env.*
+!.env.example
+
+# Runtime output: plaintext state must never be committed
+data/state.json
+.state/
+reports/*.md
+!reports/.gitkeep
+site/dist/
+
+# Editors / OS
+.DS_Store
+.vscode/
+.idea/
