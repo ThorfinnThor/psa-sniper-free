@@ -35,16 +35,16 @@ class PSAClient:
         self.delay_seconds = max(0.0, delay_seconds)
         self.max_calls = max_calls
         self.calls_made = 0
-        self.rate_limited = False
+        self.web_rate_limited = False
+        self.api_rate_limited = False
         self.session = requests.Session()
-        # Do not retry HTTP 429. A PSA rate limit should disable PSA enrichment
-        # for the remainder of this run rather than immediately hammering the
-        # same endpoint again. Transient server/network errors may still retry.
         retry = Retry(
             total=2,
             connect=2,
             read=2,
             backoff_factor=1.0,
+            # 429 is intentionally not retried: a rate limit means stop asking PSA
+            # during this run instead of hammering the same endpoint again.
             status_forcelist=(500, 502, 503, 504),
             allowed_methods=frozenset({"GET"}),
             respect_retry_after_header=True,
@@ -64,21 +64,12 @@ class PSAClient:
         if self.delay_seconds:
             time.sleep(self.delay_seconds)
 
-    def _disable_after_rate_limit(self) -> None:
-        self.rate_limited = True
-        # Both PSA surfaces can share anti-abuse/rate-limit infrastructure.
-        # Stop all PSA enrichment for this run; the eBay scan must continue.
-        self.access_token = None
-        self.web_fallback = False
-
     def get_cert(self, cert_number: str) -> PSACertInfo | None:
-        if self.rate_limited:
-            return None
-        if self.access_token:
+        if self.access_token and not self.api_rate_limited:
             info = self._get_api(cert_number)
             if info and info.valid:
                 return info
-        if self.web_fallback and not self.rate_limited:
+        if self.web_fallback and not self.web_rate_limited:
             info = self._get_web(cert_number)
             if info and info.valid:
                 return info
@@ -93,10 +84,6 @@ class PSAClient:
                 timeout=30,
             )
         except requests.RequestException:
-            # PSA enrichment is optional. Connectivity/retry failures must not
-            # abort the eBay scan. Disable the API token for this run and allow
-            # the public web fallback to be attempted once if configured.
-            self.access_token = None
             return None
         if response.status_code in {401, 403}:
             # Disable a rejected token for the remainder of this run so the web fallback
@@ -104,7 +91,7 @@ class PSAClient:
             self.access_token = None
             return None
         if response.status_code == 429:
-            self._disable_after_rate_limit()
+            self.api_rate_limited = True
             return None
         if response.status_code == 404 or response.status_code >= 500:
             return None
@@ -124,17 +111,10 @@ class PSAClient:
         url = PSA_CERT_URL.format(cert=cert_number)
         try:
             response = self.session.get(url, timeout=30, allow_redirects=True)
-        except requests.RequestException as exc:
-            # urllib3 can surface repeated 429 responses as a requests RetryError /
-            # ConnectionError before a Response object reaches us. Treat that as
-            # optional PSA enrichment failure, never as a fatal scanner error.
-            if "429" in str(exc) or "too many 429" in str(exc).lower():
-                self._disable_after_rate_limit()
-            else:
-                self.web_fallback = False
+        except requests.RequestException:
             return None
         if response.status_code == 429:
-            self._disable_after_rate_limit()
+            self.web_rate_limited = True
             return None
         if response.status_code in {403, 404} or response.status_code >= 500:
             return None
@@ -249,7 +229,21 @@ def _recent_sales(text: str, max_sales: int = 8) -> list[Money]:
     marker = "Sales of Similar Items"
     if marker not in text:
         return []
+
+    # PSA commonly renders the sales list twice (desktop table + mobile cards).
+    # Only parse the first sales block; otherwise early prices are duplicated and
+    # the median/sample size can be distorted.
     section = text.split(marker, 1)[1]
+    terminators = (
+        f"\n{marker}",
+        "\nSet Registry",
+        "\nNote:",
+        "\nCompany",
+    )
+    cut_positions = [pos for term in terminators if (pos := section.find(term)) >= 0]
+    if cut_positions:
+        section = section[: min(cut_positions)]
+
     token_pattern = re.compile(
         r"US\$\s*[\d,]+(?:\.\d{1,2})?|\$\s*[\d,]+(?:\.\d{1,2})?|"
         r"€\s*[\d.,]+|£\s*[\d,]+(?:\.\d{1,2})?"
