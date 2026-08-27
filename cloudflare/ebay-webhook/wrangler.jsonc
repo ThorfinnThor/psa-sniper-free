@@ -5,6 +5,7 @@
   "compatibility_date": "2026-08-27",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
+  // Production deploys are managed by GitHub Actions.
   "observability": {
     "enabled": true
   }
