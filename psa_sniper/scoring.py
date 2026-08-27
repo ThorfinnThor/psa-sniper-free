@@ -101,6 +101,35 @@ def market_value_from_cert(cert: PSACertInfo | None) -> MarketValue | None:
     return None
 
 
+def _overprice_penalty(confidence: str, discount_pct: float) -> int:
+    """Return a strong penalty for listings above a usable market indicator."""
+    if discount_pct > -0.10:
+        return 0
+    if confidence == "hoch":
+        if discount_pct <= -1.00:
+            return 15
+        if discount_pct <= -0.50:
+            return 12
+        if discount_pct <= -0.25:
+            return 8
+        return 4
+    if confidence == "mittel":
+        if discount_pct <= -1.00:
+            return 12
+        if discount_pct <= -0.50:
+            return 9
+        if discount_pct <= -0.25:
+            return 6
+        return 3
+    if discount_pct <= -1.00:
+        return 6
+    if discount_pct <= -0.50:
+        return 4
+    if discount_pct <= -0.25:
+        return 3
+    return 2
+
+
 def score_hit(
     listing: Listing,
     *,
@@ -249,9 +278,15 @@ def score_hit(
         elif discount_pct >= 0.15:
             score += points[2]
             reasons.append(f"Gesamtkosten ca. {discount_pct:.0%} unter Vergleichswert")
-        elif discount_pct <= -0.25:
-            score -= 2
-            warnings.append("Gesamtkosten deutlich über dem Preisindikator")
+        elif discount_pct <= -0.10:
+            penalty = _overprice_penalty(market.confidence, discount_pct)
+            score -= penalty
+            warnings.append(f"Gesamtkosten ca. {-discount_pct:.0%} über dem Preisindikator")
+            # A high-confidence market signal should be a hard gate for a sniper.
+            if market.confidence == "hoch" and discount_pct <= -0.25:
+                score = min(score, 5)
+            elif market.confidence == "mittel" and discount_pct <= -0.50:
+                score = min(score, 6)
         if market.confidence == "niedrig":
             warnings.append("Preisvergleich basiert nur auf PSA Estimate, nicht auf mehreren Sales")
 
