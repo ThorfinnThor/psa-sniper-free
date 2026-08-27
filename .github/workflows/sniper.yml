@@ -11,7 +11,32 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      configured: ${{ steps.check.outputs.configured }}
+    env:
+      EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
+      EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
+      DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
+    steps:
+      - name: Konfigurationsstatus prüfen
+        id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "$EBAY_CLIENT_ID" && -n "$EBAY_CLIENT_SECRET" && ${#DASHBOARD_PASSWORD} -ge 16 ]]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "PSA Sniper ist für Live-Scans konfiguriert."
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Live-Scan übersprungen: EBAY_CLIENT_ID, EBAY_CLIENT_SECRET und/oder ein mindestens 16 Zeichen langes DASHBOARD_PASSWORD fehlen noch."
+          fi
+
   scan:
+    needs: preflight
+    if: ${{ needs.preflight.outputs.configured == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 12
     permissions:
@@ -57,13 +82,6 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y tesseract-ocr
           pip install -r requirements-ocr.txt
-
-      - name: Erforderliche Secrets prüfen
-        shell: bash
-        run: |
-          test -n "$EBAY_CLIENT_ID" || { echo "::error::EBAY_CLIENT_ID fehlt"; exit 1; }
-          test -n "$EBAY_CLIENT_SECRET" || { echo "::error::EBAY_CLIENT_SECRET fehlt"; exit 1; }
-          test ${#DASHBOARD_PASSWORD} -ge 16 || { echo "::error::DASHBOARD_PASSWORD muss mindestens 16 Zeichen haben"; exit 1; }
 
       - name: Tests
         run: |
