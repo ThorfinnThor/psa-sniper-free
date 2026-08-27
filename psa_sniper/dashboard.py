@@ -13,8 +13,29 @@ from .util import iso_z, utc_now
 TEMPLATE_DIR = ROOT / "site" / "template"
 
 
+def _dashboard_eligible(row: dict[str, Any]) -> bool:
+    """Keep the dashboard focused on plausible buys, not obvious overpricing."""
+    discount = row.get("discount_pct")
+    market = row.get("market_value")
+    if discount is None or not isinstance(market, dict):
+        return True
+    try:
+        discount_value = float(discount)
+    except (TypeError, ValueError):
+        return True
+
+    confidence = str(market.get("confidence") or "").casefold()
+    # High-confidence PSA sales: 25%+ over the indicator is not a sniper candidate.
+    if confidence == "hoch" and discount_value <= -0.25:
+        return False
+    # With only medium confidence we use a wider safety margin.
+    if confidence == "mittel" and discount_value <= -0.50:
+        return False
+    return True
+
+
 def dashboard_payload(state: dict[str, Any]) -> dict[str, Any]:
-    history = list(state.get("history", []))
+    history = [row for row in list(state.get("history", [])) if _dashboard_eligible(row)]
     history.sort(key=lambda row: row.get("last_seen_at", ""), reverse=True)
     runs = list(state.get("runs", []))[:100]
     return {
