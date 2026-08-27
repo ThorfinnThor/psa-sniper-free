@@ -142,19 +142,31 @@ async function verifyNotification(rawBody, signatureHeader, env) {
   );
 }
 
-async function verifyAfterAcknowledgement(rawBody, signatureHeader, env) {
-  if (!canVerifyNotifications(env)) {
-    console.warn("eBay notification verification skipped: client credentials unavailable");
-    return;
-  }
+async function processDeletionInBackground(request, env) {
   try {
-    const valid = await verifyNotification(rawBody, signatureHeader, env);
+    const rawBody = await request.text();
+    const payload = JSON.parse(rawBody);
+    if (!validateDeletionPayload(payload)) {
+      console.warn("eBay notification ignored: unexpected payload shape");
+      return;
+    }
+
+    if (!canVerifyNotifications(env)) {
+      console.warn("eBay notification verification skipped: client credentials unavailable");
+      return;
+    }
+
+    const valid = await verifyNotification(
+      rawBody,
+      request.headers.get("x-ebay-signature"),
+      env,
+    );
     if (!valid) {
       console.warn("eBay notification signature verification failed");
     }
   } catch (error) {
-    // Do not log the notification payload or user identifiers.
-    console.warn(`eBay notification verification error: ${error?.message || "unknown error"}`);
+    // Never log the payload or any eBay user identifiers.
+    console.warn(`eBay notification background processing error: ${error?.message || "unknown error"}`);
   }
 }
 
@@ -175,34 +187,25 @@ async function handleChallenge(request, env) {
   });
 }
 
-async function handleDeletion(request, env, ctx) {
-  let rawBody;
-  let payload;
-  try {
-    rawBody = await request.text();
-    payload = JSON.parse(rawBody);
-  } catch {
-    return json({ error: "invalid_json" }, 400);
-  }
-  if (!validateDeletionPayload(payload)) {
-    return json({ error: "invalid_notification" }, 400);
-  }
-
-  const signatureHeader = request.headers.get("x-ebay-signature");
-
-  // eBay requires deletion notifications to be acknowledged immediately.
-  // Signature verification is deliberately performed after the 2xx response,
-  // because a brand-new Production keyset is disabled until this compliance
-  // setup succeeds and therefore may not yet be able to obtain an OAuth token.
-  const verification = verifyAfterAcknowledgement(rawBody, signatureHeader, env);
+function handleDeletion(request, env, ctx) {
+  // Dedicated endpoint: acknowledge the POST before reading/parsing/verifying it.
+  // eBay explicitly requires immediate 2xx acknowledgement, with validation after.
+  const backgroundRequest = request.clone();
+  const processing = processDeletionInBackground(backgroundRequest, env);
   if (ctx?.waitUntil) {
-    ctx.waitUntil(verification);
+    ctx.waitUntil(processing);
   } else {
-    verification.catch(() => undefined);
+    processing.catch(() => undefined);
   }
 
-  // Privacy design: persist none of username, userId or eiasToken.
-  return new Response(null, { status: 204 });
+  // 200 OK is intentionally used for maximum compatibility with eBay's test tool.
+  return new Response("", {
+    status: 200,
+    headers: {
+      "content-type": "text/plain; charset=utf-8",
+      "cache-control": "no-store",
+    },
+  });
 }
 
 export default {
@@ -213,7 +216,7 @@ export default {
     }
     try {
       if (request.method === "GET") return await handleChallenge(request, env);
-      if (request.method === "POST") return await handleDeletion(request, env, ctx);
+      if (request.method === "POST") return handleDeletion(request, env, ctx);
       if (request.method === "HEAD") return new Response(null, { status: 204 });
       return new Response("Method not allowed", {
         status: 405,
