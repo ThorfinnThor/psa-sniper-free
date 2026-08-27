@@ -26,11 +26,22 @@ jobs:
           EBAY_ID: ${{ secrets.EBAY_CLIENT_ID }}
           EBAY_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
         run: |
-          if [[ -n "$CF_ACCOUNT" && -n "$CF_TOKEN" && -n "$EBAY_TOKEN" && -n "$EBAY_ID" && -n "$EBAY_SECRET" ]]; then
+          missing=()
+          [[ -n "$CF_ACCOUNT" ]] || missing+=(CLOUDFLARE_ACCOUNT_ID)
+          [[ -n "$CF_TOKEN" ]] || missing+=(CLOUDFLARE_API_TOKEN)
+          [[ -n "$EBAY_TOKEN" ]] || missing+=(EBAY_VERIFICATION_TOKEN)
+          [[ -n "$EBAY_ID" ]] || missing+=(EBAY_CLIENT_ID)
+          [[ -n "$EBAY_SECRET" ]] || missing+=(EBAY_CLIENT_SECRET)
+          if [[ ${#missing[@]} -eq 0 ]]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "All required webhook secrets are configured." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "Cloudflare/eBay webhook secrets are not configured yet; deployment skipped cleanly." >> "$GITHUB_STEP_SUMMARY"
+            echo "### Missing repository secrets" >> "$GITHUB_STEP_SUMMARY"
+            for name in "${missing[@]}"; do
+              echo "- $name" >> "$GITHUB_STEP_SUMMARY"
+            done
+            echo "Only secret names are reported; values are never printed." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   deploy:
