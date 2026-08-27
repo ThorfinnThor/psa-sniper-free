@@ -83,56 +83,56 @@ jobs:
           EBAY_VERIFICATION_TOKEN: ${{ secrets.EBAY_VERIFICATION_TOKEN }}
         shell: bash
         run: |
+          set -euo pipefail
+          base="${DEPLOYMENT_URL%/}"
+          endpoint="$base/api/ebay-account-deletion"
+          challenge="github-smoke-test"
+          challenge_url="$endpoint?challenge_code=$challenge"
+
+          code=$(curl -sS -L -D /tmp/cf_headers.txt -o /tmp/cf_body.txt -w '%{http_code}' \
+            -H 'Accept: application/json' \
+            -H 'User-Agent: PSA-Sniper-GitHub-Smoke-Test/1.0' \
+            "$challenge_url" || true)
+
+          if [[ "$code" != "200" ]]; then
+            echo "Cloudflare live challenge returned HTTP $code"
+            echo "--- response headers ---"
+            sed -n '1,40p' /tmp/cf_headers.txt
+            echo "--- response body (first 2000 bytes) ---"
+            head -c 2000 /tmp/cf_body.txt || true
+            echo
+            exit 1
+          fi
+
           python - <<'PY'
           import hashlib
           import json
           import os
-          import time
-          import urllib.parse
-          import urllib.request
+          from pathlib import Path
 
           base = os.environ["DEPLOYMENT_URL"].rstrip("/")
           endpoint = base + "/api/ebay-account-deletion"
           token = os.environ["EBAY_VERIFICATION_TOKEN"]
           challenge = "github-smoke-test"
           expected = hashlib.sha256((challenge + token + endpoint).encode()).hexdigest()
-
-          last_error = None
-          for _ in range(8):
-              try:
-                  url = endpoint + "?" + urllib.parse.urlencode({"challenge_code": challenge})
-                  with urllib.request.urlopen(url, timeout=15) as response:
-                      body = json.loads(response.read().decode())
-                      assert response.status == 200
-                      assert body.get("challengeResponse") == expected
-                  break
-              except Exception as exc:
-                  last_error = exc
-                  time.sleep(2)
-          else:
-              raise SystemExit(f"Challenge smoke test failed: {last_error}")
-
-          payload = {
-              "metadata": {"topic": "MARKETPLACE_ACCOUNT_DELETION", "schemaVersion": "1.0", "deprecated": False},
-              "notification": {
-                  "notificationId": "github-smoke-test",
-                  "eventDate": "2026-08-27T00:00:00Z",
-                  "publishDate": "2026-08-27T00:00:00Z",
-                  "publishAttemptCount": 1,
-                  "data": {"username": "redacted", "userId": "redacted", "eiasToken": "redacted"},
-              },
-          }
-          request = urllib.request.Request(
-              endpoint,
-              data=json.dumps(payload).encode(),
-              headers={"Content-Type": "application/json"},
-              method="POST",
-          )
-          with urllib.request.urlopen(request, timeout=15) as response:
-              assert response.status == 200, response.status
-
-          print("Live GET challenge and POST acknowledgement both passed.")
+          body = json.loads(Path("/tmp/cf_body.txt").read_text())
+          assert body.get("challengeResponse") == expected, "challenge hash mismatch"
           PY
+
+          payload='{"metadata":{"topic":"MARKETPLACE_ACCOUNT_DELETION","schemaVersion":"1.0","deprecated":false},"notification":{"notificationId":"github-smoke-test","eventDate":"2026-08-27T00:00:00Z","publishDate":"2026-08-27T00:00:00Z","publishAttemptCount":1,"data":{"username":"redacted","userId":"redacted","eiasToken":"redacted"}}}'
+          post_code=$(curl -sS -L -o /tmp/cf_post_body.txt -w '%{http_code}' \
+            -H 'Content-Type: application/json' \
+            -H 'User-Agent: PSA-Sniper-GitHub-Smoke-Test/1.0' \
+            --data "$payload" "$endpoint" || true)
+
+          if [[ "$post_code" != "200" ]]; then
+            echo "Cloudflare live POST returned HTTP $post_code"
+            head -c 2000 /tmp/cf_post_body.txt || true
+            echo
+            exit 1
+          fi
+
+          echo "Live GET challenge and POST acknowledgement both passed."
 
       - name: Endpoint ausgeben
         env:
