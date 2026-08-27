@@ -8,7 +8,19 @@ from typing import Any
 from .models import MarketValue, PSACertInfo, RunStats, ScoredHit
 from .util import iso_z, parse_iso_datetime, utc_now
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+PERSONAL_HISTORY_FIELDS = {
+    "seller",
+    "seller_feedback_percentage",
+    "seller_feedback_score",
+}
+
+
+def _scrub_history_row(row: dict[str, Any]) -> dict[str, Any]:
+    clean = dict(row)
+    for key in PERSONAL_HISTORY_FIELDS:
+        clean.pop(key, None)
+    return clean
 
 
 def default_state() -> dict[str, Any]:
@@ -37,6 +49,12 @@ def load_state(path: Path) -> dict[str, Any]:
     base.update(data)
     if int(base.get("schema_version", 0)) < SCHEMA_VERSION:
         base = migrate_state(base)
+    else:
+        base["history"] = [
+            _scrub_history_row(row)
+            for row in list(base.get("history", []))
+            if isinstance(row, dict)
+        ]
     return base
 
 
@@ -47,11 +65,21 @@ def migrate_state(state: dict[str, Any]) -> dict[str, Any]:
     state.setdefault("history", [])
     state.setdefault("runs", [])
     state.setdefault("query_cursor", 0)
+    state["history"] = [
+        _scrub_history_row(row)
+        for row in list(state.get("history", []))
+        if isinstance(row, dict)
+    ]
     state["schema_version"] = SCHEMA_VERSION
     return state
 
 
 def save_state(path: Path, state: dict[str, Any]) -> None:
+    state["history"] = [
+        _scrub_history_row(row)
+        for row in list(state.get("history", []))
+        if isinstance(row, dict)
+    ]
     state["schema_version"] = SCHEMA_VERSION
     state["updated_at"] = iso_z(utc_now())
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -89,9 +117,10 @@ def prune_state(state: dict[str, Any], settings: dict[str, Any]) -> dict[str, An
         if _fresh(value.get("fetched_at") if isinstance(value, dict) else None, cache_cutoff)
     }
     history = [
-        row
+        _scrub_history_row(row)
         for row in list(state.get("history", []))
-        if _fresh(row.get("last_seen_at") or row.get("first_seen_at"), history_cutoff)
+        if isinstance(row, dict)
+        and _fresh(row.get("last_seen_at") or row.get("first_seen_at"), history_cutoff)
     ]
     history.sort(key=lambda row: row.get("last_seen_at", ""), reverse=True)
     state["history"] = history[: int(settings.get("history_max_items", 750))]
@@ -222,9 +251,6 @@ def hit_to_record(hit: ScoredHit, threshold: int) -> dict[str, Any]:
         "end_at": iso_z(listing.end_at) if listing.end_at else None,
         "first_seen_at": now,
         "last_seen_at": now,
-        "seller": listing.seller,
-        "seller_feedback_percentage": listing.seller_feedback_percentage,
-        "seller_feedback_score": listing.seller_feedback_score,
         "buying_options": listing.buying_options,
         "pure_auction": listing.pure_auction,
         "condition": listing.condition,
