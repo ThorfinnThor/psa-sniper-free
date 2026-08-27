@@ -22,5 +22,8 @@ jobs:
       - run: pytest -q
       - run: python -m compileall -q psa_sniper
       - run: node --check site/template/app.js
+      - name: Cloudflare webhook tests
+        working-directory: cloudflare/ebay-webhook
+        run: npm test
       - name: Demo-Dashboard bauen
         run: python -m psa_sniper demo --output site/dist
