@@ -2,7 +2,7 @@ from pathlib import Path
 
 import requests
 
-from psa_sniper.psa import PSAClient, parse_psa_cert_html
+from psa_sniper.psa import PSAClient, _recent_sales, parse_psa_cert_html
 
 
 def test_parse_psa_cert_html():
@@ -58,22 +58,33 @@ def test_psa_api_no_data_response_is_not_a_valid_cert():
     assert not cert.valid
 
 
-def test_web_retry_error_from_429_is_nonfatal_and_disables_psa(monkeypatch):
+def test_web_request_error_is_nonfatal(monkeypatch):
+    client = PSAClient(web_fallback=True, delay_seconds=0, max_calls=8)
+
+    def fail_get(*args, **kwargs):
+        raise requests.exceptions.ConnectionError("temporary network error")
+
+    monkeypatch.setattr(client.session, "get", fail_get)
+    assert client.get_cert("79959648") is None
+
+
+def test_direct_web_429_is_nonfatal_and_stops_more_web_lookups(monkeypatch):
     client = PSAClient(web_fallback=True, delay_seconds=0, max_calls=8)
     calls = 0
 
-    def fail_get(*args, **kwargs):
+    response = requests.Response()
+    response.status_code = 429
+    response.url = "https://www.psacard.com/cert/79959648/psa"
+
+    def get(*args, **kwargs):
         nonlocal calls
         calls += 1
-        raise requests.exceptions.RetryError(
-            "too many 429 error responses"
-        )
+        return response
 
-    monkeypatch.setattr(client.session, "get", fail_get)
+    monkeypatch.setattr(client.session, "get", get)
 
     assert client.get_cert("79959648") is None
-    assert client.rate_limited is True
-    assert client.web_fallback is False
+    assert client.web_rate_limited is True
     assert calls == 1
 
     # The rest of this scan must not keep hammering PSA.
@@ -81,15 +92,20 @@ def test_web_retry_error_from_429_is_nonfatal_and_disables_psa(monkeypatch):
     assert calls == 1
 
 
-def test_direct_web_429_is_nonfatal_and_disables_psa(monkeypatch):
-    client = PSAClient(web_fallback=True, delay_seconds=0, max_calls=8)
-
-    response = requests.Response()
-    response.status_code = 429
-    response.url = "https://www.psacard.com/cert/79959648/psa"
-
-    monkeypatch.setattr(client.session, "get", lambda *args, **kwargs: response)
-
-    assert client.get_cert("79959648") is None
-    assert client.rate_limited is True
-    assert client.web_fallback is False
+def test_recent_sales_stops_before_duplicate_mobile_sales_block():
+    text = """
+Sales of Similar Items
+$100.00
+$120.00
+$140.00
+Sales of Similar Items
+$100.00
+$120.00
+$140.00
+Set Registry
+PSA Estimate
+$999.00
+""".strip()
+    sales = _recent_sales(text)
+    assert [row.value for row in sales] == [100.0, 120.0, 140.0]
+    assert all(row.currency == "USD" for row in sales)
