@@ -77,6 +77,63 @@ jobs:
           EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
           EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
 
+      - name: Live endpoint smoke test
+        env:
+          DEPLOYMENT_URL: ${{ steps.deploy.outputs.deployment-url }}
+          EBAY_VERIFICATION_TOKEN: ${{ secrets.EBAY_VERIFICATION_TOKEN }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import time
+          import urllib.parse
+          import urllib.request
+
+          base = os.environ["DEPLOYMENT_URL"].rstrip("/")
+          endpoint = base + "/api/ebay-account-deletion"
+          token = os.environ["EBAY_VERIFICATION_TOKEN"]
+          challenge = "github-smoke-test"
+          expected = hashlib.sha256((challenge + token + endpoint).encode()).hexdigest()
+
+          last_error = None
+          for _ in range(8):
+              try:
+                  url = endpoint + "?" + urllib.parse.urlencode({"challenge_code": challenge})
+                  with urllib.request.urlopen(url, timeout=15) as response:
+                      body = json.loads(response.read().decode())
+                      assert response.status == 200
+                      assert body.get("challengeResponse") == expected
+                  break
+              except Exception as exc:
+                  last_error = exc
+                  time.sleep(2)
+          else:
+              raise SystemExit(f"Challenge smoke test failed: {last_error}")
+
+          payload = {
+              "metadata": {"topic": "MARKETPLACE_ACCOUNT_DELETION", "schemaVersion": "1.0", "deprecated": False},
+              "notification": {
+                  "notificationId": "github-smoke-test",
+                  "eventDate": "2026-08-27T00:00:00Z",
+                  "publishDate": "2026-08-27T00:00:00Z",
+                  "publishAttemptCount": 1,
+                  "data": {"username": "redacted", "userId": "redacted", "eiasToken": "redacted"},
+              },
+          }
+          request = urllib.request.Request(
+              endpoint,
+              data=json.dumps(payload).encode(),
+              headers={"Content-Type": "application/json"},
+              method="POST",
+          )
+          with urllib.request.urlopen(request, timeout=15) as response:
+              assert response.status == 200, response.status
+
+          print("Live GET challenge and POST acknowledgement both passed.")
+          PY
+
       - name: Endpoint ausgeben
         env:
           DEPLOYMENT_URL: ${{ steps.deploy.outputs.deployment-url }}
@@ -90,6 +147,8 @@ jobs:
             echo '```text'
             echo "$base/api/ebay-account-deletion"
             echo '```'
+            echo
+            echo "Live smoke test: GET challenge + POST acknowledgement passed."
             echo
             echo "Use the same value stored in GitHub secret EBAY_VERIFICATION_TOKEN in the eBay developer portal."
           } >> "$GITHUB_STEP_SUMMARY"
