@@ -1,0 +1,119 @@
+name: PSA Sniper
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Vier Läufe pro Stunde; versetzt, um typische Scheduler-Spitzen zu vermeiden.
+    - cron: "7,22,37,52 * * * *"
+
+concurrency:
+  group: psa-sniper-live
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    env:
+      EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
+      EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
+      DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
+      PSA_ACCESS_TOKEN: ${{ secrets.PSA_ACCESS_TOKEN }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      SEARCH_CONFIG_JSON: ${{ secrets.SEARCH_CONFIG_JSON }}
+      SETTINGS_OVERRIDE_JSON: ${{ secrets.SETTINGS_OVERRIDE_JSON }}
+      ENABLE_OCR: ${{ vars.ENABLE_OCR }}
+      STATE_PATH: data/state.json
+      PRIVACY_MODE: "true"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Python einrichten
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-ocr.txt
+            requirements-dev.txt
+
+      - name: Abhängigkeiten installieren
+        run: pip install -r requirements-dev.txt
+
+      - name: OCR optional installieren
+        if: ${{ vars.ENABLE_OCR == 'true' }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y tesseract-ocr
+          pip install -r requirements-ocr.txt
+
+      - name: Erforderliche Secrets prüfen
+        shell: bash
+        run: |
+          test -n "$EBAY_CLIENT_ID" || { echo "::error::EBAY_CLIENT_ID fehlt"; exit 1; }
+          test -n "$EBAY_CLIENT_SECRET" || { echo "::error::EBAY_CLIENT_SECRET fehlt"; exit 1; }
+          test ${#DASHBOARD_PASSWORD} -ge 16 || { echo "::error::DASHBOARD_PASSWORD muss mindestens 16 Zeichen haben"; exit 1; }
+
+      - name: Tests
+        run: |
+          pytest -q
+          python -m compileall -q psa_sniper
+          node --check site/template/app.js
+
+      - name: Verschlüsselten State laden
+        run: scripts/restore_state.sh
+
+      - name: Konfiguration prüfen
+        run: python -m psa_sniper doctor
+
+      - name: eBay scannen
+        run: python -m psa_sniper scan
+
+      - name: Verschlüsseltes Dashboard bauen
+        run: python -m psa_sniper dashboard --output site/dist
+
+      - name: Verschlüsselten State dauerhaft speichern
+        run: scripts/persist_state.sh
+
+      - name: Öffentliche Actions-Zusammenfassung
+        if: always()
+        run: |
+          if [[ -f reports/summary.md ]]; then
+            cat reports/summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: GitHub Pages konfigurieren
+        if: ${{ vars.ENABLE_DASHBOARD == 'true' }}
+        uses: actions/configure-pages@v5
+
+      - name: GitHub-Pages-Artefakt vorbereiten
+        if: ${{ vars.ENABLE_DASHBOARD == 'true' }}
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: site/dist
+
+  deploy-dashboard:
+    if: ${{ needs.scan.result == 'success' && vars.ENABLE_DASHBOARD == 'true' }}
+    needs: scan
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Verschlüsseltes Dashboard veröffentlichen
+        id: deployment
+        uses: actions/deploy-pages@v4
