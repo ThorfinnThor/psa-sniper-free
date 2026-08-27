@@ -34,9 +34,11 @@ jobs:
           [[ -n "$EBAY_SECRET" ]] || missing+=(EBAY_CLIENT_SECRET)
           if [[ ${#missing[@]} -eq 0 ]]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "All required webhook secrets are configured."
             echo "All required webhook secrets are configured." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "Missing repository secrets: ${missing[*]}"
             echo "### Missing repository secrets" >> "$GITHUB_STEP_SUMMARY"
             for name in "${missing[@]}"; do
               echo "- $name" >> "$GITHUB_STEP_SUMMARY"
