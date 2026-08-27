@@ -1,0 +1,9 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/ebay_account_deletion.py": {
+      "runtime": "python3.12",
+      "maxDuration": 10
+    }
+  }
+}
