@@ -39,13 +39,14 @@ export function validateDeletionPayload(payload) {
   return true;
 }
 
-function validateEnvironment(env) {
+function validateChallengeEnvironment(env) {
   if (!TOKEN_RE.test(env.EBAY_VERIFICATION_TOKEN || "")) {
     throw new Error("EBAY_VERIFICATION_TOKEN is missing or invalid");
   }
-  if (!env.EBAY_CLIENT_ID || !env.EBAY_CLIENT_SECRET) {
-    throw new Error("eBay client credentials are missing");
-  }
+}
+
+function canVerifyNotifications(env) {
+  return Boolean(env.EBAY_CLIENT_ID && env.EBAY_CLIENT_SECRET);
 }
 
 function decodeSignatureHeader(header) {
@@ -128,11 +129,11 @@ async function getPublicKey(keyId, env) {
   return data;
 }
 
-async function verifyNotification(payload, signatureHeader, env) {
+async function verifyNotification(rawBody, signatureHeader, env) {
   const signatureMeta = decodeSignatureHeader(signatureHeader);
   const publicKey = await getPublicKey(signatureMeta.kid, env);
   const verifier = createVerify(digestAlgorithm(signatureMeta, publicKey));
-  verifier.update(JSON.stringify(payload));
+  verifier.update(rawBody);
   verifier.end();
   return verifier.verify(
     formatPublicKey(publicKey.key),
@@ -141,8 +142,24 @@ async function verifyNotification(payload, signatureHeader, env) {
   );
 }
 
+async function verifyAfterAcknowledgement(rawBody, signatureHeader, env) {
+  if (!canVerifyNotifications(env)) {
+    console.warn("eBay notification verification skipped: client credentials unavailable");
+    return;
+  }
+  try {
+    const valid = await verifyNotification(rawBody, signatureHeader, env);
+    if (!valid) {
+      console.warn("eBay notification signature verification failed");
+    }
+  } catch (error) {
+    // Do not log the notification payload or user identifiers.
+    console.warn(`eBay notification verification error: ${error?.message || "unknown error"}`);
+  }
+}
+
 async function handleChallenge(request, env) {
-  validateEnvironment(env);
+  validateChallengeEnvironment(env);
   const url = new URL(request.url);
   const challengeCode = url.searchParams.get("challenge_code");
   if (!challengeCode) {
@@ -158,11 +175,12 @@ async function handleChallenge(request, env) {
   });
 }
 
-async function handleDeletion(request, env) {
-  validateEnvironment(env);
+async function handleDeletion(request, env, ctx) {
+  let rawBody;
   let payload;
   try {
-    payload = await request.json();
+    rawBody = await request.text();
+    payload = JSON.parse(rawBody);
   } catch {
     return json({ error: "invalid_json" }, 400);
   }
@@ -170,31 +188,32 @@ async function handleDeletion(request, env) {
     return json({ error: "invalid_notification" }, 400);
   }
 
-  try {
-    const valid = await verifyNotification(
-      payload,
-      request.headers.get("x-ebay-signature"),
-      env,
-    );
-    if (!valid) return new Response(null, { status: 412 });
-  } catch {
-    return new Response(null, { status: 412 });
+  const signatureHeader = request.headers.get("x-ebay-signature");
+
+  // eBay requires deletion notifications to be acknowledged immediately.
+  // Signature verification is deliberately performed after the 2xx response,
+  // because a brand-new Production keyset is disabled until this compliance
+  // setup succeeds and therefore may not yet be able to obtain an OAuth token.
+  const verification = verifyAfterAcknowledgement(rawBody, signatureHeader, env);
+  if (ctx?.waitUntil) {
+    ctx.waitUntil(verification);
+  } else {
+    verification.catch(() => undefined);
   }
 
-  // Privacy design: the Worker persists none of username, userId or eiasToken.
-  // The scanner history also intentionally omits seller identifiers.
+  // Privacy design: persist none of username, userId or eiasToken.
   return new Response(null, { status: 204 });
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (url.pathname !== "/api/ebay-account-deletion") {
       return new Response("Not found", { status: 404 });
     }
     try {
       if (request.method === "GET") return await handleChallenge(request, env);
-      if (request.method === "POST") return await handleDeletion(request, env);
+      if (request.method === "POST") return await handleDeletion(request, env, ctx);
       if (request.method === "HEAD") return new Response(null, { status: 204 });
       return new Response("Method not allowed", {
         status: 405,
