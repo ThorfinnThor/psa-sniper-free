@@ -1,0 +1,81 @@
+name: Deploy eBay Webhook to Cloudflare
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+    paths:
+      - "cloudflare/ebay-webhook/**"
+      - ".github/workflows/cloudflare-webhook.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  config:
+    runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    steps:
+      - id: check
+        shell: bash
+        env:
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          EBAY_TOKEN: ${{ secrets.EBAY_VERIFICATION_TOKEN }}
+          EBAY_ID: ${{ secrets.EBAY_CLIENT_ID }}
+          EBAY_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
+        run: |
+          if [[ -n "$CF_ACCOUNT" && -n "$CF_TOKEN" && -n "$EBAY_TOKEN" && -n "$EBAY_ID" && -n "$EBAY_SECRET" ]]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "Cloudflare/eBay webhook secrets are not configured yet; deployment skipped cleanly." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  deploy:
+    needs: config
+    if: needs.config.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Worker unit tests
+        working-directory: cloudflare/ebay-webhook
+        run: npm test
+
+      - name: Deploy Worker
+        id: deploy
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: cloudflare/ebay-webhook
+          wranglerVersion: "4"
+          command: deploy
+          secrets: |
+            EBAY_VERIFICATION_TOKEN
+            EBAY_CLIENT_ID
+            EBAY_CLIENT_SECRET
+        env:
+          EBAY_VERIFICATION_TOKEN: ${{ secrets.EBAY_VERIFICATION_TOKEN }}
+          EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
+          EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
+
+      - name: Endpoint ausgeben
+        env:
+          DEPLOYMENT_URL: ${{ steps.deploy.outputs.deployment-url }}
+        shell: bash
+        run: |
+          base="${DEPLOYMENT_URL%/}"
+          {
+            echo "## eBay Cloudflare Webhook deployed"
+            echo
+            echo "Notification Endpoint:"
+            echo '```text'
+            echo "$base/api/ebay-account-deletion"
+            echo '```'
+            echo
+            echo "Use the same value stored in GitHub secret EBAY_VERIFICATION_TOKEN in the eBay developer portal."
+          } >> "$GITHUB_STEP_SUMMARY"
