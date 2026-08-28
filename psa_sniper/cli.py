@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 
 from .config import ROOT, state_path
@@ -10,6 +11,7 @@ from .crypto import decrypt_file, encrypt_file
 from .dashboard import build_dashboard
 from .demo import demo_state
 from .doctor import print_checks, run_doctor
+from .repricing import run_repricing_queue
 from .scanner import run_scan
 from .state import default_state, save_state
 
@@ -61,6 +63,17 @@ def _cmd_state(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_scan() -> int:
+    result = run_scan()
+    if result != 0:
+        return result
+    try:
+        run_repricing_queue()
+    except Exception as exc:  # optional maintenance must never kill a successful scan
+        print(f"Repricing-Warnung: {exc.__class__.__name__}", file=sys.stderr)
+    return result
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="PSA Sniper Free")
     sub = parser.add_subparsers(dest="command")
@@ -97,7 +110,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         if args.command in {None, "scan"}:
-            return run_scan()
+            return _cmd_scan()
         if args.command == "doctor":
             return _cmd_doctor(args)
         if args.command == "dashboard":
