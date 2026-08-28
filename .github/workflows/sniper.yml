@@ -3,9 +3,9 @@ name: PSA Sniper
 on:
   workflow_dispatch:
   schedule:
-    # GitHub-Scheduler-Heartbeat. Diese Taktung lief in diesem Repository bereits zuverlässig.
+    # GitHub-Scheduler-Heartbeat alle 5 Minuten, bewusst nicht auf Minute 0.
     # Der teure Deep-Scan wird unten per State-Guard auf mindestens 180 Minuten Abstand begrenzt.
-    - cron: "7,22,37,52 * * * *"
+    - cron: "2,7,12,17,22,27,32,37,42,47,52,57 * * * *"
 
 concurrency:
   group: psa-sniper-live
