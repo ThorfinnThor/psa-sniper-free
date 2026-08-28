@@ -19,6 +19,7 @@ from .scoring import is_psa10, market_value_from_cert, preliminary_score, score_
 from .state import (
     append_run,
     get_cached_cert,
+    hit_to_record,
     is_alerted,
     load_state,
     mark_alerted,
@@ -308,7 +309,13 @@ def run_scan() -> int:
         ebay_calls=ebay.calls_made,
         notes=list(dict.fromkeys(notes)),
     )
-    append_run(state, stats, int(settings.get("run_history_max_items", 100)))
+    run_results = [hit_to_record(row, threshold) for row in [*hits, *near_hits]]
+    append_run(
+        state,
+        stats,
+        int(settings.get("run_history_max_items", 100)),
+        results=run_results,
+    )
     prune_state(state, settings)
     save_state(path, state)
     write_reports(hits, near_hits, stats)
