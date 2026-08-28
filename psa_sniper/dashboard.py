@@ -35,13 +35,17 @@ def _dashboard_eligible(row: dict[str, Any]) -> bool:
 
 
 def dashboard_payload(state: dict[str, Any]) -> dict[str, Any]:
-    history = [row for row in list(state.get("history", [])) if _dashboard_eligible(row)]
-    history.sort(key=lambda row: row.get("last_seen_at", ""), reverse=True)
+    archive_history = [row for row in list(state.get("history", [])) if isinstance(row, dict)]
+    archive_history.sort(key=lambda row: row.get("last_seen_at", ""), reverse=True)
+    history = [row for row in archive_history if _dashboard_eligible(row)]
     runs = list(state.get("runs", []))[:100]
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at": iso_z(utc_now()),
         "hits": history,
+        # This is encrypted together with the rest of the dashboard payload. It exists
+        # only so older scanner runs can be linked back to their historical cards.
+        "archive_hits": archive_history,
         "runs": runs,
     }
 
@@ -73,7 +77,7 @@ def build_dashboard(
     (output_dir / "meta.json").write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "encrypted": not plain,
                 "generated_at": payload["generated_at"],
             },
