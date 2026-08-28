@@ -5,6 +5,12 @@
   "compatibility_date": "2026-08-27",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
+  "triggers": {
+    "crons": [
+      "17 */3 * * *",
+      "47 */3 * * *"
+    ]
+  },
   // Production deploys are managed by GitHub Actions.
   "observability": {
     "enabled": true
