@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   challengeResponse,
   endpointFromRequest,
+  githubDispatchRequest,
   validateDeletionPayload,
 } from "../src/index.js";
 
@@ -47,4 +48,25 @@ test("validates marketplace account deletion shape", () => {
     }),
     false,
   );
+});
+
+test("builds authenticated GitHub workflow dispatch without leaking token into body", () => {
+  const token = "github_pat_test_secret_value";
+  const request = githubDispatchRequest(token);
+  assert.equal(
+    request.url,
+    "https://api.github.com/repos/ThorfinnThor/psa-sniper-free/actions/workflows/sniper.yml/dispatches",
+  );
+  assert.equal(request.init.method, "POST");
+  assert.equal(request.init.headers.authorization, `Bearer ${token}`);
+  const body = JSON.parse(request.init.body);
+  assert.deepEqual(body, {
+    ref: "main",
+    inputs: { source: "cloudflare" },
+  });
+  assert.equal(request.init.body.includes(token), false);
+});
+
+test("GitHub dispatch requires a token", () => {
+  assert.throws(() => githubDispatchRequest(""), /GITHUB_WORKFLOW_TOKEN/);
 });
