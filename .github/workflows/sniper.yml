@@ -3,8 +3,10 @@ name: PSA Sniper
 on:
   workflow_dispatch:
   schedule:
-    # Deep-Scan alle 3 Stunden; Minute 17 vermeidet typische Scheduler-Spitzen.
+    # Primärer Deep-Scan alle 3 Stunden; Minute 17 vermeidet typische Scheduler-Spitzen.
     - cron: "17 */3 * * *"
+    # Fallback 30 Minuten später. Er scannt nur, wenn der Primärlauf nicht erfolgreich war.
+    - cron: "47 */3 * * *"
 
 concurrency:
   group: psa-sniper-live
@@ -92,11 +94,66 @@ jobs:
       - name: Verschlüsselten State laden
         run: scripts/restore_state.sh
 
+      - name: Fallback-Frische prüfen
+        id: fallback_guard
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          should_scan = True
+          if os.environ.get("EVENT_NAME") == "schedule" and os.environ.get("EVENT_SCHEDULE") == "47 */3 * * *":
+              state_path = Path("data/state.json")
+              settings = json.loads(Path("config/settings.json").read_text(encoding="utf-8"))
+              max_age = int(settings.get("fallback_skip_if_success_within_minutes", 120))
+              try:
+                  state = json.loads(state_path.read_text(encoding="utf-8"))
+              except Exception:
+                  state = {}
+              last = state.get("last_successful_scan_at")
+              if last:
+                  try:
+                      then = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+                      age_minutes = (datetime.now(timezone.utc) - then).total_seconds() / 60
+                      if age_minutes < max_age:
+                          should_scan = False
+                          print(f"Fallback übersprungen: letzter erfolgreicher Deep-Scan vor {age_minutes:.0f} Minuten.")
+                  except ValueError:
+                      pass
+              if should_scan:
+                  print("Fallback führt Deep-Scan aus: kein ausreichend frischer erfolgreicher Primärlauf gefunden.")
+          else:
+              print("Primär- oder manueller Lauf: Deep-Scan wird ausgeführt.")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              handle.write(f"should_scan={'true' if should_scan else 'false'}\n")
+          PY
+
       - name: Konfiguration prüfen
         run: python -m psa_sniper doctor
 
       - name: eBay scannen
+        if: ${{ steps.fallback_guard.outputs.should_scan == 'true' }}
         run: python -m psa_sniper scan
+
+      - name: Erfolgreichen Deep-Scan markieren
+        if: ${{ steps.fallback_guard.outputs.should_scan == 'true' }}
+        run: |
+          python - <<'PY'
+          import json
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          path = Path("data/state.json")
+          state = json.loads(path.read_text(encoding="utf-8"))
+          state["last_successful_scan_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+          path.write_text(json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          PY
 
       - name: Verschlüsseltes Dashboard bauen
         run: python -m psa_sniper dashboard --output site/dist
