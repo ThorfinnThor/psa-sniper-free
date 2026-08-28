@@ -309,7 +309,10 @@ def run_scan() -> int:
         ebay_calls=ebay.calls_made,
         notes=list(dict.fromkeys(notes)),
     )
-    run_results = [hit_to_record(row, threshold) for row in [*hits, *near_hits]]
+    run_candidates = [*hits, *near_hits][
+        : int(settings.get("max_run_results_per_run", 60))
+    ]
+    run_results = [hit_to_record(row, threshold) for row in run_candidates]
     append_run(
         state,
         stats,
