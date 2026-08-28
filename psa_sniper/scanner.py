@@ -120,6 +120,20 @@ def _ocr_cert_safe_for_market(
     return identity_overlap(listing, cert) > 0
 
 
+def _psa_status_label(status: str) -> str:
+    return {
+        "ok": "OK",
+        "abgelehnt": "ABGELEHNT",
+        "rate_limited": "RATE-LIMIT",
+        "nicht_konfiguriert": "NICHT KONFIGURIERT",
+        "netzwerkfehler": "NETZWERKFEHLER",
+        "servicefehler": "SERVICEFEHLER",
+        "http_fehler": "HTTP-FEHLER",
+        "budget": "BUDGET ERSCHÖPFT",
+        "nicht_getestet": "NICHT GETESTET",
+    }.get(status, "UNBEKANNT")
+
+
 def run_scan() -> int:
     started = utc_now()
     settings = load_settings()
@@ -175,6 +189,9 @@ def run_scan() -> int:
         delay_seconds=float(settings.get("psa_request_delay_seconds", 0.8)),
         max_calls=int(settings.get("max_psa_calls_per_run", 8)),
     )
+    psa_api_status = psa.validate_access_token()
+    psa_api_success_baseline = psa.api_successes
+
     fx = FXRates()
     fx.refresh()
 
@@ -216,6 +233,7 @@ def run_scan() -> int:
                     summaries[item.item_id] = item
     except (EbayError, EbayBudgetExceeded) as exc:
         notes.append(_public_note(exc))
+        notes.append(f"PSA API live: {_psa_status_label(psa_api_status)}")
         completed = utc_now()
         stats = RunStats(
             iso_z(started),
@@ -414,6 +432,29 @@ def run_scan() -> int:
         notes.append(f"{market_comp_calls} eBay-Preisvergleichssuche(n) ausgeführt")
     if psa_market_web_calls:
         notes.append(f"{psa_market_web_calls} PSA-Sales-Webanreicherung(en) versucht")
+
+    cert_detected = sum(1 for row in scored if row.cert_number)
+    cert_verified = sum(1 for row in scored if row.cert and row.cert.valid)
+    pop_available = sum(
+        1 for row in scored if row.cert and row.cert.population is not None
+    )
+    price_indicators = sum(1 for row in scored if row.market_value is not None)
+    ebay_comp_prices = sum(
+        1
+        for row in scored
+        if row.market_value and row.market_value.market_type == "ebay_active"
+    )
+    verified_edges = sum(1 for row in scored if row.price_status == "verified_edge")
+    candidate_api_successes = max(0, psa.api_successes - psa_api_success_baseline)
+
+    notes.append(f"PSA API live: {_psa_status_label(psa_api_status)}")
+    notes.append(
+        "Coverage: "
+        f"Details={len(scored)}; Cert={cert_detected}; PSA={candidate_api_successes}; "
+        f"Verifiziert={cert_verified}; POP={pop_available}; Preis={price_indicators}; "
+        f"eBayCompSuche={market_comp_calls}; eBayCompPreis={ebay_comp_prices}; "
+        f"Edge={verified_edges}"
+    )
 
     completed = utc_now()
     stats = RunStats(
