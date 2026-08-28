@@ -5,10 +5,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .models import MarketValue, PSACertInfo, RunStats, ScoredHit
+from .models import MarketValue, Money, PSACertInfo, RunStats, ScoredHit
 from .util import iso_z, parse_iso_datetime, utc_now
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 PERSONAL_HISTORY_FIELDS = {
     "seller",
     "seller_feedback_percentage",
@@ -42,6 +42,7 @@ def default_state() -> dict[str, Any]:
         "processed": {},
         "alerted": {},
         "cert_cache": {},
+        "market_cache": {},
         "history": [],
         "runs": [],
         "updated_at": iso_z(utc_now()),
@@ -79,6 +80,7 @@ def migrate_state(state: dict[str, Any]) -> dict[str, Any]:
     state.setdefault("processed", {})
     state.setdefault("alerted", {})
     state.setdefault("cert_cache", {})
+    state.setdefault("market_cache", {})
     state.setdefault("history", [])
     state.setdefault("runs", [])
     state.setdefault("query_cursor", 0)
@@ -126,7 +128,10 @@ def prune_state(state: dict[str, Any], settings: dict[str, Any]) -> dict[str, An
     processed_cutoff = now - timedelta(days=int(settings.get("processed_retention_days", 7)))
     alert_cutoff = now - timedelta(days=int(settings.get("alert_retention_days", 180)))
     history_cutoff = now - timedelta(days=int(settings.get("history_retention_days", 180)))
-    cache_cutoff = now - timedelta(days=int(settings.get("cert_cache_days", 7)) * 3)
+    cert_cache_cutoff = now - timedelta(days=int(settings.get("cert_cache_days", 7)) * 3)
+    market_cache_cutoff = now - timedelta(
+        hours=max(1, int(settings.get("market_cache_hours", 8))) * 3
+    )
 
     state["processed"] = {
         key: value
@@ -141,8 +146,14 @@ def prune_state(state: dict[str, Any], settings: dict[str, Any]) -> dict[str, An
     state["cert_cache"] = {
         key: value
         for key, value in dict(state.get("cert_cache", {})).items()
-        if _fresh(value.get("fetched_at") if isinstance(value, dict) else None, cache_cutoff)
+        if _fresh(value.get("fetched_at") if isinstance(value, dict) else None, cert_cache_cutoff)
     }
+    state["market_cache"] = {
+        key: value
+        for key, value in dict(state.get("market_cache", {})).items()
+        if _fresh(value.get("fetched_at") if isinstance(value, dict) else None, market_cache_cutoff)
+    }
+
     history = [
         _scrub_history_row(row)
         for row in list(state.get("history", []))
@@ -195,6 +206,39 @@ def _money_dict(value: Any) -> dict[str, Any] | None:
     return value.to_dict() if value else None
 
 
+def _market_dict(market: MarketValue | None) -> dict[str, Any] | None:
+    if not market:
+        return None
+    return {
+        "money": market.money.to_dict(),
+        "source": market.source,
+        "confidence": market.confidence,
+        "sample_size": market.sample_size,
+        "market_type": market.market_type,
+        "required_edge": market.required_edge,
+    }
+
+
+def market_from_dict(data: dict[str, Any] | None) -> MarketValue | None:
+    if not isinstance(data, dict):
+        return None
+    money = data.get("money")
+    if not isinstance(money, dict):
+        return None
+    try:
+        parsed_money = Money(float(money["value"]), str(money["currency"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+    return MarketValue(
+        parsed_money,
+        str(data.get("source") or "Preisindikator"),
+        str(data.get("confidence") or "niedrig"),
+        int(data.get("sample_size") or 0),
+        market_type=str(data.get("market_type") or "generic"),
+        required_edge=float(data.get("required_edge") or 0.10),
+    )
+
+
 def _cert_dict(cert: PSACertInfo | None) -> dict[str, Any] | None:
     if not cert:
         return None
@@ -218,8 +262,6 @@ def _cert_dict(cert: PSACertInfo | None) -> dict[str, Any] | None:
 
 
 def cert_from_dict(data: dict[str, Any]) -> PSACertInfo:
-    from .models import Money
-
     def money(obj: Any) -> Money | None:
         if not isinstance(obj, dict):
             return None
@@ -265,9 +307,34 @@ def put_cached_cert(state: dict[str, Any], cert: PSACertInfo) -> None:
     }
 
 
+def get_cached_market(
+    state: dict[str, Any],
+    fingerprint: str,
+    max_age_hours: int,
+) -> tuple[bool, MarketValue | None]:
+    row = dict(state.get("market_cache", {})).get(fingerprint)
+    if not isinstance(row, dict):
+        return False, None
+    fetched = parse_iso_datetime(row.get("fetched_at"))
+    if not fetched or fetched < utc_now() - timedelta(hours=max_age_hours):
+        return False, None
+    data = row.get("data")
+    return True, market_from_dict(data) if isinstance(data, dict) else None
+
+
+def put_cached_market(
+    state: dict[str, Any],
+    fingerprint: str,
+    market: MarketValue | None,
+) -> None:
+    state.setdefault("market_cache", {})[fingerprint] = {
+        "fetched_at": iso_z(utc_now()),
+        "data": _market_dict(market),
+    }
+
+
 def hit_to_record(hit: ScoredHit, threshold: int) -> dict[str, Any]:
     listing = hit.listing
-    market: MarketValue | None = hit.market_value
     now = iso_z(utc_now())
     return {
         "item_id": listing.item_id,
@@ -299,16 +366,7 @@ def hit_to_record(hit: ScoredHit, threshold: int) -> dict[str, Any]:
         "cert_confidence": hit.cert_confidence,
         "cert_trusted": hit.cert_trusted,
         "cert": _cert_dict(hit.cert),
-        "market_value": (
-            {
-                "money": market.money.to_dict(),
-                "source": market.source,
-                "confidence": market.confidence,
-                "sample_size": market.sample_size,
-            }
-            if market
-            else None
-        ),
+        "market_value": _market_dict(hit.market_value),
         "discount_pct": hit.discount_pct,
     }
 

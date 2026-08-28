@@ -34,7 +34,11 @@ def _infer_price_status(row: dict[str, Any]) -> str:
         return "unverified"
 
     confidence = str(market.get("confidence") or "").casefold()
-    if confidence in {"hoch", "mittel"} and discount >= MIN_VERIFIED_PRICE_EDGE:
+    required_edge = max(
+        MIN_VERIFIED_PRICE_EDGE,
+        _float_or_none(market.get("required_edge")) or MIN_VERIFIED_PRICE_EDGE,
+    )
+    if confidence in {"hoch", "mittel"} and discount >= required_edge:
         return "verified_edge"
     if confidence == "niedrig":
         return "weak_indicator"
@@ -48,8 +52,6 @@ def _normalize_record(row: dict[str, Any]) -> dict[str, Any]:
     original_hit = bool(clean.get("is_hit"))
     clean["scan_is_hit"] = original_hit
     clean["price_status"] = _infer_price_status(clean)
-    # Legacy entries used to become Hits from rarity/title signals alone. Under the
-    # current rules only a verified price edge can keep the Kauf-Hit label.
     if clean["price_status"] != "verified_edge":
         clean["is_hit"] = False
     clean.setdefault("score_breakdown", [])
@@ -69,7 +71,6 @@ def _normalize_run(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _dashboard_eligible(row: dict[str, Any]) -> bool:
-    """Keep the main dashboard focused on plausible buys, not obvious overpricing."""
     discount_value = _float_or_none(row.get("discount_pct"))
     market = row.get("market_value")
     if discount_value is None or not isinstance(market, dict):
@@ -97,10 +98,9 @@ def dashboard_payload(state: dict[str, Any]) -> dict[str, Any]:
         if isinstance(row, dict)
     ]
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "generated_at": iso_z(utc_now()),
         "hits": history,
-        # Encrypted with the rest of the payload; used only for legacy run drill-down.
         "archive_hits": archive_history,
         "runs": runs,
     }
@@ -113,7 +113,6 @@ def _replace_required(text: str, old: str, new: str, *, label: str) -> str:
 
 
 def _apply_dashboard_ui_defaults(output_dir: Path) -> None:
-    """Keep source JS simple while enforcing purchase-hit-first dashboard defaults."""
     app_path = output_dir / "app.js"
     app = app_path.read_text(encoding="utf-8")
     replacements = [
@@ -130,6 +129,19 @@ def _apply_dashboard_ui_defaults(output_dir: Path) -> None:
             "  const scoreText = row.is_hit ? `Kauf-Hit · Score ${row.score ?? 0}` : `Beobachtung · Rohscore ${row.score ?? 0}`;\n"
             "  const score = el('span', `score-badge ${row.is_hit ? 'hot' : ''}`, scoreText);",
             "Score-Badge",
+        ),
+        (
+            "  const discount = Number(row.discount_pct);",
+            "  const discount = Number(row.discount_pct);\n"
+            "  const requiredEdge = Number(row.market_value?.required_edge ?? 0.10);",
+            "dynamische Preis-Gate-Schwelle",
+        ),
+        (
+            "        ? `${distanceLabel(discount)} zum Vergleichswert. Für einen Kauf-Hit verlangen wir mindestens 10 % bestätigten Preisvorteil.`\n"
+            "        : 'Für einen Kauf-Hit verlangen wir mindestens 10 % bestätigten Preisvorteil.',",
+            "        ? `${distanceLabel(discount)} zum Vergleichswert. Für diese Preisquelle verlangen wir mindestens ${percent(requiredEdge)} bestätigten Preisvorteil.`\n"
+            "        : `Für diese Preisquelle verlangen wir mindestens ${percent(requiredEdge)} bestätigten Preisvorteil.`,",
+            "dynamischer Preis-Gate-Text",
         ),
     ]
     for old, new, label in replacements:
@@ -189,7 +201,7 @@ def build_dashboard(
     (output_dir / "meta.json").write_text(
         json.dumps(
             {
-                "schema_version": 3,
+                "schema_version": 4,
                 "encrypted": not plain,
                 "generated_at": payload["generated_at"],
             },

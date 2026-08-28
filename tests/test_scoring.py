@@ -165,3 +165,67 @@ def test_low_pop_new_card_without_price_signal_is_watch_not_hit():
     assert hit.score <= 10
     assert any(row.get("kind") == "gate" for row in hit.score_breakdown)
     assert any("kein belastbarer preisindikator" in warning.casefold() for warning in hit.warnings)
+
+
+def test_active_ebay_comps_need_twenty_percent_edge_for_purchase_hit():
+    listing = Listing(
+        item_id="active-comp",
+        title="2021 Bundesliga PSA 10 #16",
+        url="https://www.ebay.de/itm/active-comp",
+        price=Money(85, "EUR"),
+        created_at=datetime.now(timezone.utc),
+        buying_options=["FIXED_PRICE"],
+    )
+    market = MarketValue(
+        Money(100, "EUR"),
+        "eBay aktive PSA-10-Vergleichsangebote",
+        "mittel",
+        5,
+        market_type="ebay_active",
+        required_edge=0.20,
+    )
+    hit = score_hit(
+        listing,
+        cert_number="67205095",
+        cert_source="Item-Specifics",
+        cert_confidence=1.0,
+        cert=_cert(),
+        market_value_listing_currency=market,
+        priority_terms=[],
+        demand_terms=[],
+    )
+    assert round(hit.discount_pct or 0, 2) == 0.15
+    assert hit.price_status == "no_edge"
+    assert hit.score <= 10
+    assert any("mindestens 20%" in str(row.get("label", "")) for row in hit.score_breakdown)
+
+
+def test_active_ebay_comps_can_verify_large_discount():
+    listing = Listing(
+        item_id="active-comp-hit",
+        title="2021 Bundesliga PSA 10 #16",
+        url="https://www.ebay.de/itm/active-comp-hit",
+        price=Money(75, "EUR"),
+        created_at=datetime.now(timezone.utc),
+        buying_options=["FIXED_PRICE"],
+    )
+    market = MarketValue(
+        Money(100, "EUR"),
+        "eBay aktive PSA-10-Vergleichsangebote",
+        "mittel",
+        5,
+        market_type="ebay_active",
+        required_edge=0.20,
+    )
+    hit = score_hit(
+        listing,
+        cert_number="67205095",
+        cert_source="Item-Specifics",
+        cert_confidence=1.0,
+        cert=_cert(),
+        market_value_listing_currency=market,
+        priority_terms=[],
+        demand_terms=[],
+    )
+    assert hit.price_status == "verified_edge"
+    assert hit.score >= 11

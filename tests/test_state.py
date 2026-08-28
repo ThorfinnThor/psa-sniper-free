@@ -1,5 +1,12 @@
-from psa_sniper.models import RunStats
-from psa_sniper.state import append_run, default_state, migrate_state, select_queries
+from psa_sniper.models import MarketValue, Money, RunStats
+from psa_sniper.state import (
+    append_run,
+    default_state,
+    get_cached_market,
+    migrate_state,
+    put_cached_market,
+    select_queries,
+)
 
 
 def test_query_rotation_wraps_fairly():
@@ -14,7 +21,8 @@ def test_query_rotation_wraps_fairly():
 def test_default_state_has_no_plaintext_hits():
     state = default_state()
     assert state["history"] == []
-    assert state["schema_version"] >= 3
+    assert state["market_cache"] == {}
+    assert state["schema_version"] >= 5
 
 
 def test_migration_scrubs_seller_identity_fields():
@@ -36,6 +44,7 @@ def test_migration_scrubs_seller_identity_fields():
     assert "seller" not in row
     assert "seller_feedback_percentage" not in row
     assert "seller_feedback_score" not in row
+    assert migrated["market_cache"] == {}
 
 
 def test_run_snapshot_keeps_hit_details_but_scrubs_seller_identity():
@@ -73,3 +82,27 @@ def test_run_snapshot_keeps_hit_details_but_scrubs_seller_identity():
     assert "seller" not in result
     assert "seller_feedback_percentage" not in result
     assert "seller_feedback_score" not in result
+
+
+def test_market_cache_round_trip_and_negative_cache():
+    state = default_state()
+    market = MarketValue(
+        Money(120, "EUR"),
+        "eBay aktive PSA-10-Vergleichsangebote",
+        "mittel",
+        5,
+        market_type="ebay_active",
+        required_edge=0.20,
+    )
+    put_cached_market(state, "fingerprint", market)
+    found, restored = get_cached_market(state, "fingerprint", 8)
+    assert found is True
+    assert restored is not None
+    assert restored.money.value == 120
+    assert restored.market_type == "ebay_active"
+    assert restored.required_edge == 0.20
+
+    put_cached_market(state, "no-market", None)
+    found, restored = get_cached_market(state, "no-market", 8)
+    assert found is True
+    assert restored is None

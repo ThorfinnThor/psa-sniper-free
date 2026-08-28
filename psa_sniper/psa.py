@@ -43,8 +43,6 @@ class PSAClient:
             connect=2,
             read=2,
             backoff_factor=1.0,
-            # 429 is intentionally not retried: a rate limit means stop asking PSA
-            # during this run instead of hammering the same endpoint again.
             status_forcelist=(500, 502, 503, 504),
             allowed_methods=frozenset({"GET"}),
             respect_retry_after_header=True,
@@ -75,6 +73,41 @@ class PSAClient:
                 return info
         return None
 
+    def enrich_market_data(self, cert: PSACertInfo) -> PSACertInfo:
+        """Best-effort PSA web enrichment for sales/estimate after API identity lookup."""
+        if cert.recent_sales or cert.estimate:
+            return cert
+        if not self.web_fallback or self.web_rate_limited:
+            return cert
+        info = self._get_web(cert.cert_number)
+        if not info or not info.valid:
+            return cert
+        return PSACertInfo(
+            cert_number=cert.cert_number,
+            valid=cert.valid or info.valid,
+            grade=cert.grade or info.grade,
+            year=cert.year or info.year,
+            brand_title=cert.brand_title or info.brand_title,
+            subject=cert.subject or info.subject,
+            card_number=cert.card_number or info.card_number,
+            category=cert.category or info.category,
+            variety=cert.variety or info.variety,
+            population=cert.population if cert.population is not None else info.population,
+            population_higher=(
+                cert.population_higher
+                if cert.population_higher is not None
+                else info.population_higher
+            ),
+            estimate=info.estimate,
+            recent_sales=info.recent_sales,
+            source_url=cert.source_url or info.source_url,
+            data_source=(
+                "PSA Public API + öffentliche PSA-Cert-Seite"
+                if cert.data_source
+                else info.data_source
+            ),
+        )
+
     def _get_api(self, cert_number: str) -> PSACertInfo | None:
         self._spend_call()
         try:
@@ -86,8 +119,6 @@ class PSAClient:
         except requests.RequestException:
             return None
         if response.status_code in {401, 403}:
-            # Disable a rejected token for the remainder of this run so the web fallback
-            # does not spend two calls for every candidate.
             self.access_token = None
             return None
         if response.status_code == 429:
@@ -153,8 +184,6 @@ def parse_psa_api_json(cert_number: str, payload: Any) -> PSACertInfo:
     subject = _string(_first(payload, {"subject", "player", "cardname"}))
     card_number = _string(_first(payload, {"cardnumber", "cardno"}))
     has_identity = any((returned_cert, grade, year, brand_title, subject, card_number))
-    # PSA can return IsValidRequest=true together with "No data found". A valid
-    # request is not automatically a valid certificate response.
     valid = bool(has_identity)
     if isinstance(valid_raw, bool) and not valid_raw:
         valid = False
@@ -230,9 +259,6 @@ def _recent_sales(text: str, max_sales: int = 8) -> list[Money]:
     if marker not in text:
         return []
 
-    # PSA commonly renders the sales list twice (desktop table + mobile cards).
-    # Only parse the first sales block; otherwise early prices are duplicated and
-    # the median/sample size can be distorted.
     section = text.split(marker, 1)[1]
     terminators = (
         f"\n{marker}",

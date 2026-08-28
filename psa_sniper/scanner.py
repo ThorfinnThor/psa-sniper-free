@@ -10,15 +10,29 @@ from .cert_extract import extract_cert_from_aspects, extract_cert_from_title, gr
 from .config import load_queries, load_settings, state_path
 from .ebay import EbayBudgetExceeded, EbayClient, EbayError
 from .fx import FXRates
+from .market import (
+    build_comp_query,
+    build_fallback_comp_query,
+    cert_fingerprint,
+    exact_active_comps,
+    market_value_from_active_comps,
+)
 from .models import CertCandidate, Listing, MarketValue, RunStats, ScoredHit
 from .notify import configured_channels, notify
 from .ocr import extract_cert_from_images, ocr_enabled
 from .psa import PSABudgetExceeded, PSAClient
 from .report import write_reports
-from .scoring import is_psa10, market_value_from_cert, preliminary_score, score_hit
+from .scoring import (
+    identity_overlap,
+    is_psa10,
+    market_value_from_cert,
+    preliminary_score,
+    score_hit,
+)
 from .state import (
     append_run,
     get_cached_cert,
+    get_cached_market,
     hit_to_record,
     is_alerted,
     load_state,
@@ -27,6 +41,7 @@ from .state import (
     processed_recently,
     prune_state,
     put_cached_cert,
+    put_cached_market,
     save_state,
     select_queries,
     upsert_history,
@@ -77,13 +92,32 @@ def _market_in_listing_currency(
     converted = fx.convert(market.money, target.currency)
     if not converted:
         return market if market.money.currency == target.currency else None
-    return MarketValue(converted, market.source, market.confidence, market.sample_size)
+    return MarketValue(
+        converted,
+        market.source,
+        market.confidence,
+        market.sample_size,
+        market_type=market.market_type,
+        required_edge=market.required_edge,
+    )
 
 
 def _public_note(exc: Exception) -> str:
     if isinstance(exc, EbayError):
         return str(exc)
     return exc.__class__.__name__
+
+
+def _ocr_cert_safe_for_market(
+    listing: Listing,
+    cert_candidate: CertCandidate | None,
+    cert: Any,
+) -> bool:
+    if not cert_candidate or not cert:
+        return False
+    if not cert_candidate.source.startswith("OCR"):
+        return True
+    return identity_overlap(listing, cert) > 0
 
 
 def run_scan() -> int:
@@ -221,6 +255,14 @@ def run_scan() -> int:
     ocr_items = 0
     max_ocr_items = int(settings.get("max_ocr_items_per_run", 8))
     cert_cache_days = int(settings.get("cert_cache_days", 7))
+    market_cache_hours = int(settings.get("market_cache_hours", 8))
+    max_comp_calls = int(settings.get("max_market_comp_calls_per_run", 0))
+    comp_search_limit = int(settings.get("market_comp_search_limit", 100))
+    comp_required_edge = float(settings.get("market_active_required_edge", 0.20))
+    market_comp_calls = 0
+    max_psa_market_web_calls = int(settings.get("max_psa_market_web_calls_per_run", 0))
+    psa_market_web_calls = 0
+    psa_market_web_min_prelim = int(settings.get("psa_market_web_min_preliminary_score", 8))
 
     for summary in candidates:
         try:
@@ -261,6 +303,79 @@ def run_scan() -> int:
                     put_cached_cert(state, cert)
 
         market = _market_in_listing_currency(market_value_from_cert(cert), listing, fx)
+
+        if (
+            cert
+            and cert.valid
+            and market is None
+            and psa_market_web_calls < max_psa_market_web_calls
+            and preliminary_score(listing, priority_terms) >= psa_market_web_min_prelim
+            and not psa.web_rate_limited
+        ):
+            before = psa.calls_made
+            try:
+                enriched = psa.enrich_market_data(cert)
+            except PSABudgetExceeded:
+                enriched = cert
+            if psa.calls_made > before:
+                psa_market_web_calls += 1
+            if enriched is not cert:
+                cert = enriched
+                put_cached_cert(state, cert)
+                market = _market_in_listing_currency(market_value_from_cert(cert), listing, fx)
+
+        if (
+            market is None
+            and cert
+            and cert.valid
+            and is_psa10(cert.grade)
+            and _ocr_cert_safe_for_market(listing, cert_candidate, cert)
+        ):
+            target = listing.total_cost or listing.price
+            fingerprint = cert_fingerprint(cert)
+            if target and fingerprint.strip("|"):
+                cached, cached_market = get_cached_market(
+                    state, fingerprint, market_cache_hours
+                )
+                if cached:
+                    market = cached_market
+                elif market_comp_calls < max_comp_calls:
+                    try:
+                        comp_rows: list[Listing] = []
+                        comp_queries = [
+                            build_comp_query(cert),
+                            build_fallback_comp_query(cert),
+                        ]
+                        values = []
+                        for comp_query in dict.fromkeys(query for query in comp_queries if query):
+                            if market_comp_calls >= max_comp_calls:
+                                break
+                            rows = ebay.search(
+                                comp_query,
+                                limit=comp_search_limit,
+                                started_after=None,
+                            )
+                            market_comp_calls += 1
+                            comp_rows.extend(rows)
+                            values = exact_active_comps(
+                                comp_rows,
+                                cert,
+                                target_currency=target.currency,
+                                fx=fx,
+                                exclude_item_id=listing.item_id,
+                            )
+                            if len(values) >= 3:
+                                break
+                        market = market_value_from_active_comps(
+                            values,
+                            medium_required_edge=comp_required_edge,
+                        )
+                        put_cached_market(state, fingerprint, market)
+                    except EbayBudgetExceeded:
+                        notes.append("eBay-Budget für weitere Preis-Comps ausgeschöpft")
+                    except EbayError:
+                        notes.append("Mindestens eine eBay-Preisvergleichssuche ist fehlgeschlagen")
+
         hit = score_hit(
             listing,
             cert_number=cert_candidate.number if cert_candidate else None,
@@ -294,6 +409,11 @@ def run_scan() -> int:
             mark_alerted(state, hit.listing.item_id, statuses or {"dashboard": True})
         else:
             notes.append("Mindestens ein Alert konnte nicht zugestellt werden; Dashboard enthält den Hit")
+
+    if market_comp_calls:
+        notes.append(f"{market_comp_calls} eBay-Preisvergleichssuche(n) ausgeführt")
+    if psa_market_web_calls:
+        notes.append(f"{psa_market_web_calls} PSA-Sales-Webanreicherung(en) versucht")
 
     completed = utc_now()
     stats = RunStats(

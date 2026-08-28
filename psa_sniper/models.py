@@ -81,6 +81,8 @@ class MarketValue:
     source: str
     confidence: str
     sample_size: int = 0
+    market_type: str = "generic"
+    required_edge: float = 0.10
 
 
 @dataclass(slots=True)

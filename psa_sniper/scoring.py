@@ -24,7 +24,6 @@ STOPWORDS = {
     "pokemon", "one", "piece", "topps", "panini", "psa", "gem", "mint", "chrome",
 }
 
-# A Kauf-Hit must have a usable price signal, not only rarity/title signals.
 MIN_VERIFIED_PRICE_EDGE = 0.10
 UNVERIFIED_HIT_SCORE_CAP = 10
 
@@ -99,14 +98,27 @@ def market_value_from_cert(cert: PSACertInfo | None) -> MarketValue | None:
     if sales:
         sample_size = sum(1 for row in cert.recent_sales if row.currency == sales.currency)
         confidence = "hoch" if sample_size >= 3 else "mittel"
-        return MarketValue(sales, "PSA ähnliche Verkäufe", confidence, sample_size)
+        return MarketValue(
+            sales,
+            "PSA ähnliche Verkäufe",
+            confidence,
+            sample_size,
+            market_type="psa_sales",
+            required_edge=0.10,
+        )
     if cert.estimate:
-        return MarketValue(cert.estimate, "PSA Estimate", "niedrig", 0)
+        return MarketValue(
+            cert.estimate,
+            "PSA Estimate",
+            "niedrig",
+            0,
+            market_type="psa_estimate",
+            required_edge=0.25,
+        )
     return None
 
 
 def _overprice_penalty(confidence: str, discount_pct: float) -> int:
-    """Return a strong penalty for listings above a usable market indicator."""
     if discount_pct > -0.10:
         return 0
     if confidence == "hoch":
@@ -138,7 +150,7 @@ def _gate_label(price_status: str) -> str:
     return {
         "unverified": "Preis-Gate: kein belastbarer Preisindikator – nur Beobachtung",
         "weak_indicator": "Preis-Gate: Preisquelle zu schwach – nur Beobachtung",
-        "no_edge": "Preis-Gate: weniger als 10 % bestätigter Preisvorteil – nur Beobachtung",
+        "no_edge": "Preis-Gate: erforderlicher bestätigter Preisvorteil nicht erreicht – nur Beobachtung",
         "over_market": "Preis-Gate: Angebot liegt über dem Preisindikator – kein Kauf-Hit",
         "auction": "Preis-Gate: Auktion ohne belastbaren Endpreis – nur Beobachtung",
     }.get(price_status, "Preis-Gate: Kaufpreis nicht ausreichend bestätigt – nur Beobachtung")
@@ -308,7 +320,9 @@ def score_hit(
     if not listing.pure_auction and market and acquisition and market.money.value > 0:
         discount_pct = 1.0 - acquisition.value / market.money.value
         confidence = market.confidence.casefold()
-        if confidence in {"hoch", "mittel"} and discount_pct >= MIN_VERIFIED_PRICE_EDGE:
+        required_edge = max(MIN_VERIFIED_PRICE_EDGE, float(market.required_edge or 0.10))
+
+        if confidence in {"hoch", "mittel"} and discount_pct >= required_edge:
             price_status = "verified_edge"
         elif confidence == "niedrig":
             price_status = "weak_indicator"
@@ -324,7 +338,12 @@ def score_hit(
         else:
             points = (3, 2, 1)
 
-        if discount_pct >= 0.40:
+        if 0 <= discount_pct < required_edge:
+            adjust(
+                0,
+                f"Preisvorteil ca. {discount_pct:.0%}; erforderlich sind mindestens {required_edge:.0%}",
+            )
+        elif discount_pct >= 0.40:
             label = f"Gesamtkosten ca. {discount_pct:.0%} unter Vergleichswert"
             adjust(points[0], label)
             reasons.append(label)
@@ -336,7 +355,7 @@ def score_hit(
             label = f"Gesamtkosten ca. {discount_pct:.0%} unter Vergleichswert"
             adjust(points[2], label)
             reasons.append(label)
-        elif discount_pct >= MIN_VERIFIED_PRICE_EDGE and confidence in {"hoch", "mittel"}:
+        elif discount_pct >= required_edge and confidence in {"hoch", "mittel"}:
             adjust(0, f"Preisvorteil ca. {discount_pct:.0%} bestätigt; unter der Bonusgrenze")
         elif discount_pct <= -0.10:
             penalty = _overprice_penalty(confidence, discount_pct)
@@ -348,10 +367,19 @@ def score_hit(
             elif confidence == "mittel" and discount_pct <= -0.50 and score > 6:
                 adjust(6 - score, "Hard Gate: deutlich über mittlerem Preisindikator", "gate")
         else:
-            adjust(0, "Kein bestätigter Preisvorteil von mindestens 10 %")
+            adjust(0, f"Kein bestätigter Preisvorteil von mindestens {required_edge:.0%}")
+
+        if market.market_type == "ebay_active":
+            if market.sample_size >= 3:
+                adjust(0, f"eBay-Marktanker aus {market.sample_size} exakten aktiven PSA-10-Comps")
+            else:
+                adjust(0, f"nur {market.sample_size} exakte aktive eBay-Comp(s); Preisquelle zu dünn")
 
         if confidence == "niedrig":
-            label = "Preisvergleich basiert nur auf PSA Estimate, nicht auf mehreren Sales"
+            if market.market_type == "psa_estimate":
+                label = "Preisvergleich basiert nur auf PSA Estimate, nicht auf mehreren Sales"
+            else:
+                label = "Preisvergleich basiert auf zu wenigen belastbaren Vergleichsangeboten"
             warnings.append(label)
             adjust(0, label)
     elif not listing.pure_auction:
@@ -365,8 +393,6 @@ def score_hit(
             adjust(-1, label)
             warnings.append(label)
 
-    # Rarity/title quality can make a card interesting, but not a purchase hit on its own.
-    # Keep such listings visible as observations while preventing a misleading Hit label.
     if price_status != "verified_edge" and score > UNVERIFIED_HIT_SCORE_CAP:
         adjust(UNVERIFIED_HIT_SCORE_CAP - score, _gate_label(price_status), "gate")
 

@@ -75,3 +75,26 @@ def test_legacy_hit_without_verified_price_is_demoted_to_watch():
     assert row["scan_is_hit"] is True
     assert row["is_hit"] is False
     assert row["price_status"] == "unverified"
+
+
+def test_active_comp_legacy_record_uses_its_twenty_percent_required_edge():
+    state = {
+        "history": [
+            {
+                "item_id": "active-comp-15",
+                "last_seen_at": "2026-08-28T08:00:00Z",
+                "score": 13,
+                "is_hit": True,
+                "discount_pct": 0.15,
+                "market_value": {
+                    "confidence": "mittel",
+                    "required_edge": 0.20,
+                    "market_type": "ebay_active",
+                },
+            }
+        ],
+        "runs": [],
+    }
+    row = dashboard_payload(state)["hits"][0]
+    assert row["price_status"] == "no_edge"
+    assert row["is_hit"] is False
