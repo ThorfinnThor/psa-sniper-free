@@ -2,19 +2,34 @@ name: PSA Sniper Scheduler
 
 on:
   schedule:
-    # Neuer, bewusst separater GitHub-Scheduler. Heartbeat alle 5 Minuten;
-    # der Scanner-Core lässt nur etwa alle 3 Stunden einen echten Deep-Scan zu.
-    - cron: "2,7,12,17,22,27,32,37,42,47,52,57 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/sniper-schedule.yml"
 
 permissions:
-  contents: write
-  pages: write
-  id-token: write
+  actions: write
+  contents: read
 
 jobs:
-  scheduled-scan:
-    uses: ./.github/workflows/sniper.yml
-    with:
-      automated: true
-    secrets: inherit
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: PSA Sniper automatisch starten
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/$REPO/actions/workflows/sniper.yml/dispatches" \
+            -f ref=main \
+            -f 'inputs[automated]=true'
+          echo "Scanner per workflow_dispatch angefordert."
