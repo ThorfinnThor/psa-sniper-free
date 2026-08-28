@@ -3,8 +3,8 @@ name: PSA Sniper
 on:
   workflow_dispatch:
   schedule:
-    # Vier Läufe pro Stunde; versetzt, um typische Scheduler-Spitzen zu vermeiden.
-    - cron: "7,22,37,52 * * * *"
+    # Deep-Scan alle 3 Stunden; Minute 17 vermeidet typische Scheduler-Spitzen.
+    - cron: "17 */3 * * *"
 
 concurrency:
   group: psa-sniper-live
@@ -38,7 +38,7 @@ jobs:
     needs: preflight
     if: ${{ needs.preflight.outputs.configured == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 30
     permissions:
       contents: write
       pages: write
