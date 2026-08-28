@@ -112,6 +112,78 @@ def _replace_required(text: str, old: str, new: str, *, label: str) -> str:
     return text.replace(old, new)
 
 
+def _coverage_js() -> str:
+    return r'''function coverageData() {
+  const run = state.payload?.runs?.[0];
+  const notes = Array.isArray(run?.notes) ? run.notes : [];
+  const coverageLine = notes.find(note => String(note).startsWith('Coverage:'));
+  const statusLine = notes.find(note => String(note).startsWith('PSA API live:'));
+  const values = {};
+  if (coverageLine) {
+    String(coverageLine).replace(/^Coverage:\s*/, '').split(';').forEach(part => {
+      const separator = part.indexOf('=');
+      if (separator < 0) return;
+      const key = part.slice(0, separator).trim();
+      const raw = part.slice(separator + 1).trim();
+      const number = Number(raw);
+      values[key] = Number.isFinite(number) ? number : raw;
+    });
+  }
+  const psaStatus = statusLine
+    ? String(statusLine).split(':').slice(1).join(':').trim()
+    : 'NICHT GETESTET';
+  return { run, values, psaStatus };
+}
+
+function ensureCoverageElements() {
+  let header = $('coverageHeader');
+  let grid = $('coverage');
+  if (!header) {
+    header = el('div', 'result-bar');
+    header.id = 'coverageHeader';
+    $('stats').after(header);
+  }
+  if (!grid) {
+    grid = el('section', 'stats-grid');
+    grid.id = 'coverage';
+    grid.setAttribute('aria-label', 'Preis-Coverage des letzten Scanner-Laufs');
+    header.after(grid);
+  }
+  return { header, grid };
+}
+
+function renderCoverage() {
+  const { header, grid } = ensureCoverageElements();
+  const { run, values, psaStatus } = coverageData();
+  const details = values.Details ?? run?.detailed_candidates ?? '–';
+  header.replaceChildren(
+    el('p', '', 'Preis-Coverage · letzter Lauf'),
+    el('p', 'muted compact', run ? `Basis: ${details} Detailprüfungen` : 'Noch kein Lauf'),
+  );
+  const cards = [
+    ['Details', details, 'Listings vollständig geprüft'],
+    ['Cert erkannt', values.Cert ?? '–', 'Titel · Item-Specifics · OCR'],
+    ['PSA API', psaStatus, `${values.PSA ?? 0} neue gültige API-Cert(s)`],
+    ['Cert bestätigt', values.Verifiziert ?? '–', 'API · Cache · Web-Fallback'],
+    ['POP vorhanden', values.POP ?? '–', 'Population erfolgreich verfügbar'],
+    ['Preisindikator', values.Preis ?? '–', 'PSA Sales · eBay Comps · Estimate'],
+    ['eBay Comp-Suchen', values.eBayCompSuche ?? '–', `${values.eBayCompPreis ?? 0} brauchbare Comp-Preis(e)`],
+    ['Preisvorteil bestätigt', values.Edge ?? '–', 'je Preisquelle erforderliches Gate erfüllt'],
+  ];
+  grid.replaceChildren(...cards.map(([label, value, note]) => {
+    const card = el('article', 'stat-card');
+    card.append(
+      el('div', 'stat-label', label),
+      el('div', 'stat-value', String(value)),
+      el('div', 'stat-note', note),
+    );
+    return card;
+  }));
+}
+
+'''
+
+
 def _apply_dashboard_ui_defaults(output_dir: Path) -> None:
     app_path = output_dir / "app.js"
     app = app_path.read_text(encoding="utf-8")
@@ -142,6 +214,16 @@ def _apply_dashboard_ui_defaults(output_dir: Path) -> None:
             "        ? `${distanceLabel(discount)} zum Vergleichswert. Für diese Preisquelle verlangen wir mindestens ${percent(requiredEdge)} bestätigten Preisvorteil.`\n"
             "        : `Für diese Preisquelle verlangen wir mindestens ${percent(requiredEdge)} bestätigten Preisvorteil.`,",
             "dynamischer Preis-Gate-Text",
+        ),
+        (
+            "  renderStats(all);\n  renderHealth();",
+            "  renderStats(all);\n  renderCoverage();\n  renderHealth();",
+            "Coverage-Render",
+        ),
+        (
+            "function renderHealth() {",
+            _coverage_js() + "function renderHealth() {",
+            "Coverage-UI",
         ),
     ]
     for old, new, label in replacements:
