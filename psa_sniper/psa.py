@@ -15,6 +15,7 @@ from .util import normalize_text, parse_int
 
 PSA_API_URL = "https://api.psacard.com/publicapi/cert/GetByCertNumber/{cert}"
 PSA_CERT_URL = "https://www.psacard.com/cert/{cert}/psa"
+PSA_TOKEN_TEST_CERT = "67205095"
 
 
 class PSABudgetExceeded(RuntimeError):
@@ -37,6 +38,8 @@ class PSAClient:
         self.calls_made = 0
         self.web_rate_limited = False
         self.api_rate_limited = False
+        self.api_auth_status = "nicht_getestet"
+        self.api_successes = 0
         self.session = requests.Session()
         retry = Retry(
             total=2,
@@ -61,6 +64,22 @@ class PSAClient:
         self.calls_made += 1
         if self.delay_seconds:
             time.sleep(self.delay_seconds)
+
+    def validate_access_token(self, cert_number: str = PSA_TOKEN_TEST_CERT) -> str:
+        """Validate the configured token without ever exposing it.
+
+        The check uses one public, known certificate. A 2xx response proves that
+        the token is accepted. Rejected/rate-limited/network states remain
+        non-fatal so the scanner can continue with cached data or the web fallback.
+        """
+        if not self.access_token:
+            self.api_auth_status = "nicht_konfiguriert"
+            return self.api_auth_status
+        try:
+            self._get_api(cert_number)
+        except PSABudgetExceeded:
+            self.api_auth_status = "budget"
+        return self.api_auth_status
 
     def get_cert(self, cert_number: str) -> PSACertInfo | None:
         if self.access_token and not self.api_rate_limited:
@@ -117,17 +136,26 @@ class PSAClient:
                 timeout=30,
             )
         except requests.RequestException:
+            self.api_auth_status = "netzwerkfehler"
             return None
         if response.status_code in {401, 403}:
+            self.api_auth_status = "abgelehnt"
             self.access_token = None
             return None
         if response.status_code == 429:
+            self.api_auth_status = "rate_limited"
             self.api_rate_limited = True
             return None
-        if response.status_code == 404 or response.status_code >= 500:
+        if response.status_code >= 500:
+            self.api_auth_status = "servicefehler"
             return None
         if response.status_code >= 400:
+            self.api_auth_status = "http_fehler"
             return None
+
+        # Any successful HTTP response proves that PSA accepted the bearer token,
+        # even if a particular cert payload later turns out to contain no data.
+        self.api_auth_status = "ok"
         try:
             payload = response.json()
         except ValueError:
@@ -135,6 +163,8 @@ class PSAClient:
         info = parse_psa_api_json(cert_number, payload)
         info.source_url = PSA_API_URL.format(cert=cert_number)
         info.data_source = "PSA Public API"
+        if info.valid:
+            self.api_successes += 1
         return info
 
     def _get_web(self, cert_number: str) -> PSACertInfo | None:
