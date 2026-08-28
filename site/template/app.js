@@ -8,6 +8,7 @@ const state = {
   view: 'all',
   status: 'all',
   expanded: new Set(),
+  expandedRuns: new Set(),
   localStatus: loadLocalStatus(),
 };
 
@@ -94,6 +95,7 @@ unlockForm.addEventListener('submit', async (event) => {
 
 $('lockButton').addEventListener('click', () => {
   state.payload = null;
+  state.expandedRuns.clear();
   $('hitGrid').replaceChildren();
   $('stats').replaceChildren();
   $('runsTable').replaceChildren();
@@ -297,7 +299,7 @@ function renderCard(row) {
   metrics.append(
     metric('Gesamt', money(row.total_cost || row.price)),
     metric('PSA-10-POP', row.cert?.population ?? '–'),
-    metric('Abstand', row.discount_pct == null ? '–' : percent(row.discount_pct), row.discount_pct >= .15),
+    metric('Abstand', row.discount_pct == null ? '–' : distanceLabel(row.discount_pct), row.discount_pct >= .15),
   );
   content.append(metrics);
 
@@ -379,24 +381,138 @@ function renderDetails(row) {
   return box;
 }
 
+function runKey(run) {
+  return `${run.started_at || ''}|${run.completed_at || ''}`;
+}
+
+function runResults(run) {
+  if (Array.isArray(run.results)) return run.results;
+
+  // Legacy fallback for runs created before per-run snapshots existed. History rows
+  // receive first_seen_at during the scan, so they can usually be mapped back to it.
+  const archive = Array.isArray(state.payload?.archive_hits) ? state.payload.archive_hits : [];
+  const start = Date.parse(run.started_at || '');
+  const end = Date.parse(run.completed_at || '');
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return [];
+  return archive.filter(item => {
+    const seen = Date.parse(item.first_seen_at || item.last_seen_at || '');
+    return Number.isFinite(seen) && seen >= start - 5_000 && seen <= end + 10_000;
+  });
+}
+
+function renderRunResult(item, legacy = false) {
+  const card = el('article', 'run-result-card');
+  const head = el('div', 'run-result-head');
+  const badges = el('div', 'run-result-badges');
+  badges.append(el('span', `run-result-badge ${item.is_hit ? 'hit' : 'watch'}`, item.is_hit ? 'Hit' : 'Beobachtung'));
+  if (legacy) badges.append(el('span', 'run-result-badge legacy', 'Historisch zugeordnet'));
+  head.append(badges, el('strong', 'run-result-score', `Score ${item.score ?? '–'}`));
+  card.append(head, el('h3', 'run-result-title', item.title || 'Ohne Titel'));
+
+  const identity = certIdentity(item.cert);
+  if (identity) card.append(el('p', 'run-result-identity', identity));
+
+  const metrics = el('div', 'run-result-metrics');
+  metrics.append(
+    metric('Gesamt', money(item.total_cost || item.price)),
+    metric('POP', item.cert?.population ?? '–'),
+    metric('Abstand', item.discount_pct == null ? '–' : distanceLabel(item.discount_pct), item.discount_pct >= .15),
+  );
+  card.append(metrics);
+
+  const detailBits = [];
+  if (item.market_value) detailBits.push(`Preisindikator ${money(item.market_value.money)}`);
+  if (item.cert_number) detailBits.push(`Cert ${item.cert_number}`);
+  if (item.created_at) detailBits.push(`eingestellt ${formatRelative(item.created_at)}`);
+  if (detailBits.length) card.append(el('p', 'run-result-meta', detailBits.join(' · ')));
+
+  if (item.url) {
+    const link = el('a', 'run-result-link', 'Auf eBay öffnen');
+    link.href = item.url;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    card.append(link);
+  }
+  return card;
+}
+
+function renderRunPanel(run, results) {
+  const panel = el('div', 'run-results-panel');
+  const legacy = !Array.isArray(run.results);
+  const title = el('div', 'run-results-title');
+  title.append(
+    el('strong', '', `Ergebnisse vom ${formatDate(run.completed_at, true)}`),
+    el('span', '', `${run.hits ?? 0} Hit(s) · ${run.near_hits ?? 0} Beobachtung(en)`),
+  );
+  panel.append(title);
+
+  if (!results.length) {
+    panel.append(el(
+      'p',
+      'run-results-empty',
+      legacy
+        ? 'Für diesen älteren Lauf ist der Treffer-Zähler erhalten, aber die Kartendetails lassen sich aus dem aktuellen State nicht mehr eindeutig rekonstruieren.'
+        : 'Dieser Lauf hatte keine gespeicherten Trefferdetails.'
+    ));
+    return panel;
+  }
+
+  if (legacy) {
+    panel.append(el('p', 'run-results-note', 'Legacy-Zuordnung anhand des Zeitstempels. Die heutige Sniper-Logik kann diese Karte inzwischen anders bewerten.'));
+  }
+  const grid = el('div', 'run-results-grid');
+  grid.replaceChildren(...results.map(item => renderRunResult(item, legacy)));
+  panel.append(grid);
+  return panel;
+}
+
 function renderRuns() {
-  const rows = state.payload.runs || [];
+  const runs = state.payload.runs || [];
   const container = $('runsTable');
+  const children = [];
   const header = el('div', 'run-row header');
-  ['Zeit', 'Queries', 'Frisch', 'Details', 'Hits', 'Calls'].forEach(value => header.append(el('span', '', value)));
-  const body = rows.slice(0, 20).map(run => {
-    const row = el('div', 'run-row');
+  ['Zeit', 'Queries', 'Frisch', 'Details', 'Hits / Watch', 'Calls'].forEach(value => header.append(el('span', '', value)));
+  children.push(header);
+
+  runs.slice(0, 20).forEach(run => {
+    const key = runKey(run);
+    const expected = Number(run.hits || 0) + Number(run.near_hits || 0);
+    const canExpand = expected > 0 || (Array.isArray(run.results) && run.results.length > 0);
+    const open = state.expandedRuns.has(key);
+    const row = el('div', `run-row ${canExpand ? 'clickable' : ''}`);
+    const timeText = `${open ? '▾' : canExpand ? '›' : '·'} ${formatDate(run.completed_at)}`;
     [
-      formatDate(run.completed_at),
+      timeText,
       run.queries_used ?? '–',
       run.fresh_listings ?? '–',
       run.detailed_candidates ?? '–',
-      run.hits ?? '–',
+      `${run.hits ?? 0} / ${run.near_hits ?? 0}`,
       run.ebay_calls ?? '–',
     ].forEach(value => row.append(el('span', '', String(value))));
-    return row;
+
+    if (canExpand) {
+      const toggle = () => {
+        if (state.expandedRuns.has(key)) state.expandedRuns.delete(key);
+        else state.expandedRuns.add(key);
+        renderRuns();
+      };
+      row.tabIndex = 0;
+      row.setAttribute('role', 'button');
+      row.setAttribute('aria-expanded', open ? 'true' : 'false');
+      row.addEventListener('click', toggle);
+      row.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          toggle();
+        }
+      });
+    }
+
+    children.push(row);
+    if (open) children.push(renderRunPanel(run, runResults(run)));
   });
-  container.replaceChildren(header, ...body);
+
+  container.replaceChildren(...children);
 }
 
 function certIdentity(cert) {
@@ -415,6 +531,12 @@ function money(value) {
 
 function percent(value) {
   return new Intl.NumberFormat('de-DE', { style: 'percent', maximumFractionDigits: 0 }).format(value);
+}
+
+function distanceLabel(value) {
+  if (!Number.isFinite(Number(value))) return '–';
+  const number = Number(value);
+  return number >= 0 ? `${percent(number)} unter` : `${percent(Math.abs(number))} über`;
 }
 
 function median(values) {
