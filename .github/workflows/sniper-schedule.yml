@@ -1,0 +1,20 @@
+name: PSA Sniper Scheduler
+
+on:
+  schedule:
+    # Neuer, bewusst separater GitHub-Scheduler. Heartbeat alle 5 Minuten;
+    # der Scanner-Core lässt nur etwa alle 3 Stunden einen echten Deep-Scan zu.
+    - cron: "2,7,12,17,22,27,32,37,42,47,52,57 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  scheduled-scan:
+    uses: ./.github/workflows/sniper.yml
+    with:
+      automated: true
+    secrets: inherit
