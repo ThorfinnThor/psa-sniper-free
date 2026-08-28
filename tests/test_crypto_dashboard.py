@@ -29,7 +29,7 @@ def test_dashboard_contains_only_encrypted_payload(tmp_path: Path):
     assert (out / "index.html").exists()
 
 
-def test_dashboard_hides_high_confidence_listing_25_percent_over_market():
+def test_dashboard_hides_high_confidence_listing_25_percent_over_market_but_archives_it():
     state = {
         "history": [
             {
@@ -49,3 +49,4 @@ def test_dashboard_hides_high_confidence_listing_25_percent_over_market():
     }
     payload = dashboard_payload(state)
     assert [row["item_id"] for row in payload["hits"]] == ["possible-buy"]
+    assert {row["item_id"] for row in payload["archive_hits"]} == {"bad-buy", "possible-buy"}
