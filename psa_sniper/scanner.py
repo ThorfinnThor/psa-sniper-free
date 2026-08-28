@@ -11,7 +11,7 @@ from .config import load_queries, load_settings, state_path
 from .ebay import EbayBudgetExceeded, EbayClient, EbayError
 from .fx import FXRates
 from .listing_market import (
-    build_listing_comp_query,
+    build_listing_comp_queries,
     exact_active_comps_for_listing,
     listing_comp_fingerprint,
     listing_comp_identity,
@@ -108,6 +108,41 @@ def _market_in_listing_currency(
         market_type=market.market_type,
         required_edge=market.required_edge,
     )
+
+
+def _market_needs_upgrade(market: MarketValue | None) -> bool:
+    """Weak indicators such as PSA Estimate must not block better market data."""
+    return market is None or market.confidence.casefold() == "niedrig"
+
+
+def _prefer_market_value(
+    current: MarketValue | None,
+    candidate: MarketValue | None,
+) -> MarketValue | None:
+    """Choose the strongest available price source without inflating confidence."""
+    if candidate is None:
+        return current
+    if current is None:
+        return candidate
+
+    confidence_rank = {"hoch": 3, "mittel": 2, "niedrig": 1}
+    source_rank = {
+        "psa_sales": 4,
+        "ebay_active": 3,
+        "ebay_active_provisional": 2,
+        "psa_estimate": 1,
+    }
+    current_key = (
+        confidence_rank.get(current.confidence.casefold(), 0),
+        source_rank.get(current.market_type, 0),
+        int(current.sample_size or 0),
+    )
+    candidate_key = (
+        confidence_rank.get(candidate.confidence.casefold(), 0),
+        source_rank.get(candidate.market_type, 0),
+        int(candidate.sample_size or 0),
+    )
+    return candidate if candidate_key > current_key else current
 
 
 def _public_note(exc: Exception) -> str:
@@ -286,7 +321,7 @@ def run_scan() -> int:
     comp_search_limit = int(settings.get("market_comp_search_limit", 100))
     comp_required_edge = float(settings.get("market_active_required_edge", 0.20))
     listing_market_min_prelim = int(
-        settings.get("market_listing_fallback_min_preliminary_score", 8)
+        settings.get("market_listing_fallback_min_preliminary_score", 7)
     )
     market_comp_calls = 0
     max_psa_market_web_calls = int(settings.get("max_psa_market_web_calls_per_run", 0))
@@ -353,34 +388,91 @@ def run_scan() -> int:
                 put_cached_cert(state, cert)
                 market = _market_in_listing_currency(market_value_from_cert(cert), listing, fx)
 
+        # A weak source such as PSA Estimate is only a fallback. It must not stop
+        # an exact PSA-identity eBay comp lookup from replacing it.
         if (
-            market is None
+            _market_needs_upgrade(market)
             and cert
             and cert.valid
             and is_psa10(cert.grade)
             and _ocr_cert_safe_for_market(listing, cert_candidate, cert)
         ):
             target = listing.total_cost or listing.price
-            fingerprint = cert_fingerprint(cert)
-            if target and fingerprint.strip("|"):
+            if target:
+                fingerprint = f"{cert_fingerprint(cert)}|{target.currency.upper()}"
+                if fingerprint.strip("|"):
+                    cached, cached_market = get_cached_market(
+                        state, fingerprint, market_cache_hours
+                    )
+                    if cached and cached_market is None:
+                        cached = False
+                    if cached:
+                        market = _prefer_market_value(market, cached_market)
+                    elif market_comp_calls < max_comp_calls:
+                        try:
+                            comp_rows: list[Listing] = []
+                            comp_queries = [
+                                build_comp_query(cert),
+                                build_fallback_comp_query(cert),
+                            ]
+                            values = []
+                            for comp_query in dict.fromkeys(query for query in comp_queries if query):
+                                if market_comp_calls >= max_comp_calls:
+                                    break
+                                rows = ebay.search(
+                                    comp_query,
+                                    limit=comp_search_limit,
+                                    started_after=None,
+                                )
+                                market_comp_calls += 1
+                                comp_rows.extend(rows)
+                                values = exact_active_comps(
+                                    comp_rows,
+                                    cert,
+                                    target_currency=target.currency,
+                                    fx=fx,
+                                    exclude_item_id=listing.item_id,
+                                )
+                                if len(values) >= 3:
+                                    break
+                            comp_market = market_value_from_active_comps(
+                                values,
+                                medium_required_edge=comp_required_edge,
+                            )
+                            market = _prefer_market_value(market, comp_market)
+                            if comp_market is not None:
+                                put_cached_market(state, fingerprint, comp_market)
+                        except EbayBudgetExceeded:
+                            notes.append("eBay-Budget für weitere Preis-Comps ausgeschöpft")
+                        except EbayError:
+                            notes.append("Mindestens eine eBay-Preisvergleichssuche ist fehlgeschlagen")
+
+        # If PSA identity is unavailable, use a conservative listing-identity
+        # fallback. It remains LOW confidence, but it is still preferable to an
+        # ungrounded PSA Estimate when exact active listings can be matched.
+        if (
+            _market_needs_upgrade(market)
+            and market_comp_calls < max_comp_calls
+            and preliminary_score(listing, priority_terms) >= listing_market_min_prelim
+        ):
+            identity = listing_comp_identity(listing)
+            target = listing.total_cost or listing.price
+            if identity and target:
+                fingerprint = (
+                    f"{listing_comp_fingerprint(identity)}|{target.currency.upper()}"
+                )
                 cached, cached_market = get_cached_market(
                     state, fingerprint, market_cache_hours
                 )
-                # Old versions cached "no comps" for eight hours. A negative
-                # result must never suppress a fresh market lookup.
                 if cached and cached_market is None:
                     cached = False
                 if cached:
-                    market = cached_market
-                elif market_comp_calls < max_comp_calls:
+                    market = _prefer_market_value(market, cached_market)
+                else:
                     try:
                         comp_rows: list[Listing] = []
-                        comp_queries = [
-                            build_comp_query(cert),
-                            build_fallback_comp_query(cert),
-                        ]
                         values = []
-                        for comp_query in dict.fromkeys(query for query in comp_queries if query):
+                        for comp_query in build_listing_comp_queries(identity):
                             if market_comp_calls >= max_comp_calls:
                                 break
                             rows = ebay.search(
@@ -390,67 +482,22 @@ def run_scan() -> int:
                             )
                             market_comp_calls += 1
                             comp_rows.extend(rows)
-                            values = exact_active_comps(
+                            values = exact_active_comps_for_listing(
                                 comp_rows,
-                                cert,
+                                identity,
                                 target_currency=target.currency,
                                 fx=fx,
                                 exclude_item_id=listing.item_id,
                             )
                             if len(values) >= 3:
                                 break
-                        market = market_value_from_active_comps(
-                            values,
-                            medium_required_edge=comp_required_edge,
-                        )
-                        if market is not None:
-                            put_cached_market(state, fingerprint, market)
-                    except EbayBudgetExceeded:
-                        notes.append("eBay-Budget für weitere Preis-Comps ausgeschöpft")
-                    except EbayError:
-                        notes.append("Mindestens eine eBay-Preisvergleichssuche ist fehlgeschlagen")
-
-        # PSA identity/POP may be unavailable (for example rejected API token or
-        # PSA web rate limiting). Pricing must still degrade gracefully. This
-        # fallback requires PSA 10 + card number + meaningful title/aspect terms,
-        # and deliberately returns LOW confidence so it can never create a buy hit.
-        if (
-            market is None
-            and market_comp_calls < max_comp_calls
-            and preliminary_score(listing, priority_terms) >= listing_market_min_prelim
-        ):
-            identity = listing_comp_identity(listing)
-            target = listing.total_cost or listing.price
-            if identity and target:
-                fingerprint = listing_comp_fingerprint(identity)
-                cached, cached_market = get_cached_market(
-                    state, fingerprint, market_cache_hours
-                )
-                if cached and cached_market is None:
-                    cached = False
-                if cached:
-                    market = cached_market
-                else:
-                    try:
-                        rows = ebay.search(
-                            build_listing_comp_query(identity),
-                            limit=comp_search_limit,
-                            started_after=None,
-                        )
-                        market_comp_calls += 1
-                        values = exact_active_comps_for_listing(
-                            rows,
-                            identity,
-                            target_currency=target.currency,
-                            fx=fx,
-                            exclude_item_id=listing.item_id,
-                        )
-                        market = market_value_from_listing_comps(
+                        listing_market = market_value_from_listing_comps(
                             values,
                             required_edge=max(0.25, comp_required_edge),
                         )
-                        if market is not None:
-                            put_cached_market(state, fingerprint, market)
+                        market = _prefer_market_value(market, listing_market)
+                        if listing_market is not None:
+                            put_cached_market(state, fingerprint, listing_market)
                     except EbayBudgetExceeded:
                         notes.append("eBay-Budget für weitere Listing-Preis-Comps ausgeschöpft")
                     except EbayError:

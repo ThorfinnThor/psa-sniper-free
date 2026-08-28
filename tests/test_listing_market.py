@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from psa_sniper.listing_market import (
+    build_listing_comp_queries,
     build_listing_comp_query,
     exact_active_comps_for_listing,
     listing_comp_identity,
@@ -87,3 +88,56 @@ def test_provisional_market_is_always_low_confidence():
     assert market.confidence == "niedrig"
     assert market.market_type == "ebay_active_provisional"
     assert market.required_edge == 0.25
+
+
+def test_pikachu_query_prioritizes_subject_and_set_code():
+    row = listing(
+        "pika",
+        "2023 Pokemon Japanese SV2A - Pokemon Card 151 Art Rare #173 Pikachu PSA 10",
+    )
+    identity = listing_comp_identity(row)
+    assert identity is not None
+    assert identity.card_number == "173"
+    assert identity.terms[:2] == ("pikachu", "sv2a")
+    assert build_listing_comp_query(identity) == "pikachu sv2a 173 PSA 10"
+    assert build_listing_comp_queries(identity) == [
+        "pikachu sv2a 173 PSA 10",
+        "pikachu 173 PSA 10",
+    ]
+
+
+def test_charizard_query_drops_generic_localized_words():
+    row = listing(
+        "zard",
+        "2026 Pokemon Karte M2a Mega Charizard X ex #223 MA Korean PSA 10 Gem Mint",
+    )
+    identity = listing_comp_identity(row)
+    assert identity is not None
+    assert identity.card_number == "223"
+    assert identity.terms[:2] == ("charizard", "m2a")
+    assert build_listing_comp_query(identity) == "charizard m2a 223 PSA 10"
+
+
+def test_luffy_prefers_card_number_near_psa_over_magazine_issue_number():
+    row = listing(
+        "luffy",
+        "One Piece Card Game Monkey D. Luffy Promo Foil WSJ #36-37 043 JP PSA 10 2023",
+    )
+    identity = listing_comp_identity(row)
+    assert identity is not None
+    assert identity.card_number == "043"
+    assert identity.terms[:2] == ("monkey", "luffy")
+    assert build_listing_comp_query(identity) == "monkey luffy 043 PSA 10"
+
+
+def test_listing_match_keeps_set_disambiguation_even_on_fallback_query():
+    source = listing(
+        "own",
+        "2023 Pokemon Japanese SV2A Art Rare #173 Pikachu PSA 10",
+    )
+    identity = listing_comp_identity(source)
+    assert identity is not None
+    good = listing("good", "Pikachu #173 SV2A PSA 10 Japanese", 120)
+    wrong_set = listing("wrong", "Pikachu #173 VSTAR Universe PSA 10", 100)
+    assert listing_comp_identity_score(good, identity)[1] is True
+    assert listing_comp_identity_score(wrong_set, identity)[1] is False
