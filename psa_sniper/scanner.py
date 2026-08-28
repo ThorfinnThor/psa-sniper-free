@@ -10,6 +10,13 @@ from .cert_extract import extract_cert_from_aspects, extract_cert_from_title, gr
 from .config import load_queries, load_settings, state_path
 from .ebay import EbayBudgetExceeded, EbayClient, EbayError
 from .fx import FXRates
+from .listing_market import (
+    build_listing_comp_query,
+    exact_active_comps_for_listing,
+    listing_comp_fingerprint,
+    listing_comp_identity,
+    market_value_from_listing_comps,
+)
 from .market import (
     build_comp_query,
     build_fallback_comp_query,
@@ -21,6 +28,7 @@ from .models import CertCandidate, Listing, MarketValue, RunStats, ScoredHit
 from .notify import configured_channels, notify
 from .ocr import extract_cert_from_images, ocr_enabled
 from .psa import PSABudgetExceeded, PSAClient
+from .psa_auth import normalize_psa_access_token
 from .report import write_reports
 from .scoring import (
     identity_overlap,
@@ -184,7 +192,7 @@ def run_scan() -> int:
         max_calls=int(settings.get("max_ebay_calls_per_run", 30)),
     )
     psa = PSAClient(
-        access_token=os.getenv("PSA_ACCESS_TOKEN"),
+        access_token=normalize_psa_access_token(os.getenv("PSA_ACCESS_TOKEN")),
         web_fallback=bool(settings.get("enable_psa_web_fallback", True)),
         delay_seconds=float(settings.get("psa_request_delay_seconds", 0.8)),
         max_calls=int(settings.get("max_psa_calls_per_run", 8)),
@@ -277,6 +285,9 @@ def run_scan() -> int:
     max_comp_calls = int(settings.get("max_market_comp_calls_per_run", 0))
     comp_search_limit = int(settings.get("market_comp_search_limit", 100))
     comp_required_edge = float(settings.get("market_active_required_edge", 0.20))
+    listing_market_min_prelim = int(
+        settings.get("market_listing_fallback_min_preliminary_score", 8)
+    )
     market_comp_calls = 0
     max_psa_market_web_calls = int(settings.get("max_psa_market_web_calls_per_run", 0))
     psa_market_web_calls = 0
@@ -355,6 +366,10 @@ def run_scan() -> int:
                 cached, cached_market = get_cached_market(
                     state, fingerprint, market_cache_hours
                 )
+                # Old versions cached "no comps" for eight hours. A negative
+                # result must never suppress a fresh market lookup.
+                if cached and cached_market is None:
+                    cached = False
                 if cached:
                     market = cached_market
                 elif market_comp_calls < max_comp_calls:
@@ -388,11 +403,58 @@ def run_scan() -> int:
                             values,
                             medium_required_edge=comp_required_edge,
                         )
-                        put_cached_market(state, fingerprint, market)
+                        if market is not None:
+                            put_cached_market(state, fingerprint, market)
                     except EbayBudgetExceeded:
                         notes.append("eBay-Budget für weitere Preis-Comps ausgeschöpft")
                     except EbayError:
                         notes.append("Mindestens eine eBay-Preisvergleichssuche ist fehlgeschlagen")
+
+        # PSA identity/POP may be unavailable (for example rejected API token or
+        # PSA web rate limiting). Pricing must still degrade gracefully. This
+        # fallback requires PSA 10 + card number + meaningful title/aspect terms,
+        # and deliberately returns LOW confidence so it can never create a buy hit.
+        if (
+            market is None
+            and market_comp_calls < max_comp_calls
+            and preliminary_score(listing, priority_terms) >= listing_market_min_prelim
+        ):
+            identity = listing_comp_identity(listing)
+            target = listing.total_cost or listing.price
+            if identity and target:
+                fingerprint = listing_comp_fingerprint(identity)
+                cached, cached_market = get_cached_market(
+                    state, fingerprint, market_cache_hours
+                )
+                if cached and cached_market is None:
+                    cached = False
+                if cached:
+                    market = cached_market
+                else:
+                    try:
+                        rows = ebay.search(
+                            build_listing_comp_query(identity),
+                            limit=comp_search_limit,
+                            started_after=None,
+                        )
+                        market_comp_calls += 1
+                        values = exact_active_comps_for_listing(
+                            rows,
+                            identity,
+                            target_currency=target.currency,
+                            fx=fx,
+                            exclude_item_id=listing.item_id,
+                        )
+                        market = market_value_from_listing_comps(
+                            values,
+                            required_edge=max(0.25, comp_required_edge),
+                        )
+                        if market is not None:
+                            put_cached_market(state, fingerprint, market)
+                    except EbayBudgetExceeded:
+                        notes.append("eBay-Budget für weitere Listing-Preis-Comps ausgeschöpft")
+                    except EbayError:
+                        notes.append("Mindestens eine Listing-Preisvergleichssuche ist fehlgeschlagen")
 
         hit = score_hit(
             listing,
@@ -442,7 +504,8 @@ def run_scan() -> int:
     ebay_comp_prices = sum(
         1
         for row in scored
-        if row.market_value and row.market_value.market_type == "ebay_active"
+        if row.market_value
+        and row.market_value.market_type in {"ebay_active", "ebay_active_provisional"}
     )
     verified_edges = sum(1 for row in scored if row.price_status == "verified_edge")
     candidate_api_successes = max(0, psa.api_successes - psa_api_success_baseline)
