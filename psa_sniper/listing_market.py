@@ -9,7 +9,7 @@ from .models import Listing, MarketValue, Money
 from .util import normalize_text
 
 _GENERIC = {
-    "the", "and", "card", "cards", "trading", "game", "edition", "collection",
+    "the", "and", "one", "piece", "card", "cards", "trading", "game", "edition", "collection",
     "pokemon", "pokémon", "psa", "gem", "mint", "gemmt", "tcg", "graded", "grade",
     "original", "rare", "holo", "foil", "cardgame", "karte", "karten", "sammelkarte",
     "sammelkarten", "pokemonkarte", "pokemonkarten",
