@@ -106,6 +106,61 @@ def dashboard_payload(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _replace_required(text: str, old: str, new: str, *, label: str) -> str:
+    if old not in text:
+        raise RuntimeError(f"Dashboard-Template unerwartet: {label} nicht gefunden")
+    return text.replace(old, new)
+
+
+def _apply_dashboard_ui_defaults(output_dir: Path) -> None:
+    """Keep source JS simple while enforcing purchase-hit-first dashboard defaults."""
+    app_path = output_dir / "app.js"
+    app = app_path.read_text(encoding="utf-8")
+    replacements = [
+        ("  view: 'all',", "  view: 'hits',", "initiale Ansicht"),
+        ("  $('minScore').value = '7';", "  $('minScore').value = '4';", "Score-Reset"),
+        ("  state.view = 'all';", "  state.view = 'hits';", "Ansicht-Reset"),
+        (
+            "  setActiveChip('viewChips', $('viewChips').querySelector('[data-view=\"all\"]'));",
+            "  setActiveChip('viewChips', $('viewChips').querySelector('[data-view=\"hits\"]'));",
+            "aktiver Ansicht-Chip",
+        ),
+        (
+            "  const score = el('span', `score-badge ${row.is_hit ? 'hot' : ''}`, `Score ${row.score ?? 0}`);",
+            "  const scoreText = row.is_hit ? `Kauf-Hit · Score ${row.score ?? 0}` : `Beobachtung · Rohscore ${row.score ?? 0}`;\n"
+            "  const score = el('span', `score-badge ${row.is_hit ? 'hot' : ''}`, scoreText);",
+            "Score-Badge",
+        ),
+    ]
+    for old, new, label in replacements:
+        app = _replace_required(app, old, new, label=label)
+    app_path.write_text(app, encoding="utf-8")
+
+    index_path = output_dir / "index.html"
+    index = index_path.read_text(encoding="utf-8")
+    index_replacements = [
+        ("<span>Min. Score</span>", "<span>Min. Screening-Score</span>", "Score-Label"),
+        (
+            '<input id="minScore" type="number" min="0" max="50" value="7">',
+            '<input id="minScore" type="number" min="4" max="50" value="4">',
+            "Score-Eingabe",
+        ),
+        (
+            '<button class="chip active" data-view="all" type="button">Alle</button>',
+            '<button class="chip" data-view="all" type="button">Alle</button>',
+            "Alle-Chip",
+        ),
+        (
+            '<button class="chip" data-view="hits" type="button">🔥 Kauf-Hits</button>',
+            '<button class="chip active" data-view="hits" type="button">🔥 Kauf-Hits</button>',
+            "Kauf-Hit-Chip",
+        ),
+    ]
+    for old, new, label in index_replacements:
+        index = _replace_required(index, old, new, label=label)
+    index_path.write_text(index, encoding="utf-8")
+
+
 def build_dashboard(
     state_file: Path,
     output_dir: Path,
@@ -118,6 +173,7 @@ def build_dashboard(
     if output_dir.exists():
         shutil.rmtree(output_dir)
     shutil.copytree(TEMPLATE_DIR, output_dir)
+    _apply_dashboard_ui_defaults(output_dir)
 
     if plain:
         envelope: dict[str, Any] = {"format": "plain", "payload": payload}
