@@ -23,6 +23,18 @@ def _scrub_history_row(row: dict[str, Any]) -> dict[str, Any]:
     return clean
 
 
+def _scrub_run_row(row: dict[str, Any]) -> dict[str, Any]:
+    clean = dict(row)
+    results = clean.get("results")
+    if isinstance(results, list):
+        clean["results"] = [
+            _scrub_history_row(item)
+            for item in results
+            if isinstance(item, dict)
+        ]
+    return clean
+
+
 def default_state() -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
@@ -55,6 +67,11 @@ def load_state(path: Path) -> dict[str, Any]:
             for row in list(base.get("history", []))
             if isinstance(row, dict)
         ]
+        base["runs"] = [
+            _scrub_run_row(row)
+            for row in list(base.get("runs", []))
+            if isinstance(row, dict)
+        ]
     return base
 
 
@@ -70,6 +87,11 @@ def migrate_state(state: dict[str, Any]) -> dict[str, Any]:
         for row in list(state.get("history", []))
         if isinstance(row, dict)
     ]
+    state["runs"] = [
+        _scrub_run_row(row)
+        for row in list(state.get("runs", []))
+        if isinstance(row, dict)
+    ]
     state["schema_version"] = SCHEMA_VERSION
     return state
 
@@ -78,6 +100,11 @@ def save_state(path: Path, state: dict[str, Any]) -> None:
     state["history"] = [
         _scrub_history_row(row)
         for row in list(state.get("history", []))
+        if isinstance(row, dict)
+    ]
+    state["runs"] = [
+        _scrub_run_row(row)
+        for row in list(state.get("runs", []))
         if isinstance(row, dict)
     ]
     state["schema_version"] = SCHEMA_VERSION
@@ -124,7 +151,11 @@ def prune_state(state: dict[str, Any], settings: dict[str, Any]) -> dict[str, An
     ]
     history.sort(key=lambda row: row.get("last_seen_at", ""), reverse=True)
     state["history"] = history[: int(settings.get("history_max_items", 750))]
-    state["runs"] = list(state.get("runs", []))[: int(settings.get("run_history_max_items", 100))]
+    state["runs"] = [
+        _scrub_run_row(row)
+        for row in list(state.get("runs", []))
+        if isinstance(row, dict)
+    ][: int(settings.get("run_history_max_items", 100))]
     return state
 
 
@@ -294,7 +325,13 @@ def upsert_history(state: dict[str, Any], hit: ScoredHit, threshold: int) -> Non
     state["history"] = history
 
 
-def append_run(state: dict[str, Any], stats: RunStats, max_items: int) -> None:
+def append_run(
+    state: dict[str, Any],
+    stats: RunStats,
+    max_items: int,
+    *,
+    results: list[dict[str, Any]] | None = None,
+) -> None:
     row = {
         "started_at": stats.started_at,
         "completed_at": stats.completed_at,
@@ -308,4 +345,10 @@ def append_run(state: dict[str, Any], stats: RunStats, max_items: int) -> None:
         "ebay_calls": stats.ebay_calls,
         "notes": stats.notes,
     }
+    if results is not None:
+        row["results"] = [
+            _scrub_history_row(item)
+            for item in results
+            if isinstance(item, dict)
+        ]
     state["runs"] = [row, *list(state.get("runs", []))][:max_items]
