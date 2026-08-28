@@ -6,9 +6,13 @@ def test_scheduler_is_separate_from_scanner_core():
     scheduler = Path(".github/workflows/sniper-schedule.yml").read_text(encoding="utf-8")
 
     assert "workflow_call:" in core
+    assert "workflow_dispatch:" in core
     assert "schedule:" not in core
+    assert "automated:" in core
+
     assert "schedule:" in scheduler
-    assert 'cron: "2,7,12,17,22,27,32,37,42,47,52,57 * * * *"' in scheduler
-    assert "uses: ./.github/workflows/sniper.yml" in scheduler
-    assert "automated: true" in scheduler
-    assert "secrets: inherit" in scheduler
+    assert 'cron: "*/5 * * * *"' in scheduler
+    assert "actions: write" in scheduler
+    assert "GH_TOKEN: ${{ github.token }}" in scheduler
+    assert "/actions/workflows/sniper.yml/dispatches" in scheduler
+    assert "inputs[automated]=true" in scheduler
