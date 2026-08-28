@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import shutil
 from dataclasses import dataclass
@@ -34,10 +35,24 @@ def run_doctor(live: bool = False) -> tuple[list[Check], bool]:
         return checks, False
 
     max_calls = int(settings.get("max_ebay_calls_per_run", 30))
-    daily = max_calls * 96
-    level = "OK" if daily <= 4500 else "WARNUNG"
+    interval_hours = max(0.25, float(settings.get("schedule_interval_hours", 0.25)))
+    runs_per_day = math.ceil(24 / interval_hours)
+    daily = max_calls * runs_per_day
+    reserve = 5000 - daily
+    if daily > 5000:
+        level = "FEHLER"
+        ok = False
+    elif daily > 4800:
+        level = "WARNUNG"
+    else:
+        level = "OK"
     checks.append(
-        Check(level, "eBay-Call-Budget", f"theoretisch max. {daily} Calls/Tag bei 15-Minuten-Cron")
+        Check(
+            level,
+            "eBay-Call-Budget",
+            f"theoretisch max. {daily} Calls/Tag bei {interval_hours:g}h-Cron; "
+            f"Puffer zu 5000: {reserve}",
+        )
     )
 
     client_id = os.getenv("EBAY_CLIENT_ID", "").strip()
