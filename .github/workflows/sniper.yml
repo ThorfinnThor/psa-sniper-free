@@ -2,10 +2,16 @@ name: PSA Sniper
 
 on:
   workflow_dispatch:
+    inputs:
+      automated:
+        description: "True when triggered by the dedicated scheduler"
+        required: false
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       automated:
-        description: "True when called by the dedicated scheduler workflow"
+        description: "True when called by an automated scheduler"
         required: false
         type: boolean
         default: false
@@ -61,7 +67,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Direkte workflow_dispatch-Läufe sollen immer sofort scannen.
+          # Direkte manuelle Runs sollen immer sofort scannen.
           if [[ "$AUTOMATED" != "true" ]]; then
             echo "should_scan=true" >> "$GITHUB_OUTPUT"
             echo "Manueller Lauf: Deep-Scan wird sofort ausgeführt."
