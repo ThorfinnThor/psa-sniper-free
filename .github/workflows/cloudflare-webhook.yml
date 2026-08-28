@@ -1,6 +1,6 @@
 name: Deploy eBay Webhook to Cloudflare
 
-# Triggered after webhook/scheduler secrets are configured.
+# Triggered after webhook secrets are configured.
 on:
   workflow_dispatch:
   push:
@@ -26,7 +26,6 @@ jobs:
           EBAY_TOKEN: ${{ secrets.EBAY_VERIFICATION_TOKEN }}
           EBAY_ID: ${{ secrets.EBAY_CLIENT_ID }}
           EBAY_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
-          GH_WORKFLOW_TOKEN: ${{ secrets.GITHUB_WORKFLOW_TOKEN }}
         run: |
           missing=()
           [[ -n "$CF_ACCOUNT" ]] || missing+=(CLOUDFLARE_ACCOUNT_ID)
@@ -34,11 +33,10 @@ jobs:
           [[ -n "$EBAY_TOKEN" ]] || missing+=(EBAY_VERIFICATION_TOKEN)
           [[ -n "$EBAY_ID" ]] || missing+=(EBAY_CLIENT_ID)
           [[ -n "$EBAY_SECRET" ]] || missing+=(EBAY_CLIENT_SECRET)
-          [[ -n "$GH_WORKFLOW_TOKEN" ]] || missing+=(GITHUB_WORKFLOW_TOKEN)
           if [[ ${#missing[@]} -eq 0 ]]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
-            echo "All required webhook and scheduler secrets are configured."
-            echo "All required webhook and scheduler secrets are configured." >> "$GITHUB_STEP_SUMMARY"
+            echo "All required webhook secrets are configured."
+            echo "All required webhook secrets are configured." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
             echo "Missing repository secrets: ${missing[*]}"
@@ -47,7 +45,6 @@ jobs:
               echo "- $name" >> "$GITHUB_STEP_SUMMARY"
             done
             echo "Only secret names are reported; values are never printed." >> "$GITHUB_STEP_SUMMARY"
-            echo "The already deployed eBay webhook remains untouched until all secrets are present." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   deploy:
@@ -75,12 +72,10 @@ jobs:
             EBAY_VERIFICATION_TOKEN
             EBAY_CLIENT_ID
             EBAY_CLIENT_SECRET
-            GITHUB_WORKFLOW_TOKEN
         env:
           EBAY_VERIFICATION_TOKEN: ${{ secrets.EBAY_VERIFICATION_TOKEN }}
           EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
           EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
-          GITHUB_WORKFLOW_TOKEN: ${{ secrets.GITHUB_WORKFLOW_TOKEN }}
 
       - name: Live endpoint smoke test
         env:
@@ -146,7 +141,7 @@ jobs:
         run: |
           base="${DEPLOYMENT_URL%/}"
           {
-            echo "## eBay Cloudflare Webhook + PSA Sniper Scheduler deployed"
+            echo "## eBay Cloudflare Webhook deployed"
             echo
             echo "Notification Endpoint:"
             echo '```text'
@@ -154,6 +149,6 @@ jobs:
             echo '```'
             echo
             echo "Live smoke test: GET challenge + POST acknowledgement passed."
-            echo "Cloudflare Cron: primary at minute 17 every 3h; fallback at minute 47 every 3h."
-            echo "Both dispatch GitHub with source=cloudflare; the workflow freshness guard prevents duplicate eBay scans."
+            echo
+            echo "Use the same value stored in GitHub secret EBAY_VERIFICATION_TOKEN in the eBay developer portal."
           } >> "$GITHUB_STEP_SUMMARY"
