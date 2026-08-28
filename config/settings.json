@@ -4,6 +4,7 @@
   "delivery_country": "DE",
   "buyer_postal_code": "",
   "schedule_interval_hours": 3,
+  "fallback_skip_if_success_within_minutes": 120,
   "run_window_minutes": 200,
   "max_results_per_query": 200,
   "max_search_calls_per_run": 24,
