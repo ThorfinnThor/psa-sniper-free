@@ -2,16 +2,10 @@ name: PSA Sniper
 
 on:
   workflow_dispatch:
-    inputs:
-      source:
-        description: "Trigger-Quelle; cloudflare aktiviert den Frische-Guard"
-        required: false
-        default: "manual"
-        type: string
   schedule:
-    # GitHub-Cron bleibt nur als zusätzlicher Backup-Trigger aktiv.
-    - cron: "17 */3 * * *"
-    - cron: "47 */3 * * *"
+    # GitHub-Scheduler-Heartbeat. Diese Taktung lief in diesem Repository bereits zuverlässig.
+    # Der teure Deep-Scan wird unten per State-Guard auf mindestens 180 Minuten Abstand begrenzt.
+    - cron: "7,22,37,52 * * * *"
 
 concurrency:
   group: psa-sniper-live
@@ -41,9 +35,82 @@ jobs:
             echo "::warning::Live-Scan übersprungen: EBAY_CLIENT_ID, EBAY_CLIENT_SECRET und/oder ein mindestens 16 Zeichen langes DASHBOARD_PASSWORD fehlen noch."
           fi
 
-  scan:
+  gate:
     needs: preflight
     if: ${{ needs.preflight.outputs.configured == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      should_scan: ${{ steps.guard.outputs.should_scan }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Deep-Scan-Frische prüfen
+        id: guard
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Ein manueller Run soll immer sofort scannen.
+          if [[ "$EVENT_NAME" != "schedule" ]]; then
+            echo "should_scan=true" >> "$GITHUB_OUTPUT"
+            echo "Manueller Lauf: Deep-Scan wird sofort ausgeführt."
+            exit 0
+          fi
+
+          # Die sniper-state-Branch wird nur nach einem erfolgreichen echten Scan aktualisiert.
+          # Ihr Commit-Zeitpunkt ist daher ein robuster, nicht-sensitiver Frischemarker.
+          last_success=""
+          if git ls-remote --exit-code --heads origin sniper-state >/dev/null 2>&1; then
+            git fetch --quiet --depth=1 origin sniper-state
+            last_success="$(git show -s --format=%cI FETCH_HEAD 2>/dev/null || true)"
+          fi
+
+          LAST_SUCCESS="$last_success" python3 - <<'PY'
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          settings = json.loads(Path("config/settings.json").read_text(encoding="utf-8"))
+          min_age = int(settings.get("automatic_scan_min_age_minutes", 180))
+          last_raw = os.environ.get("LAST_SUCCESS", "").strip()
+          should_scan = True
+
+          if last_raw:
+              try:
+                  then = datetime.fromisoformat(last_raw.replace("Z", "+00:00"))
+                  age_minutes = (datetime.now(timezone.utc) - then.astimezone(timezone.utc)).total_seconds() / 60
+                  if age_minutes < min_age:
+                      should_scan = False
+                      print(
+                          f"Heartbeat: letzter erfolgreicher Deep-Scan vor {age_minutes:.0f} Minuten; "
+                          f"warte bis mindestens {min_age} Minuten."
+                      )
+                  else:
+                      print(
+                          f"Heartbeat: letzter erfolgreicher Deep-Scan vor {age_minutes:.0f} Minuten; "
+                          "Deep-Scan ist fällig."
+                      )
+              except ValueError:
+                  print("Heartbeat: State-Zeitstempel unlesbar; sicherheitshalber Deep-Scan ausführen.")
+          else:
+              print("Heartbeat: kein erfolgreicher State-Snapshot gefunden; Deep-Scan ausführen.")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              handle.write(f"should_scan={'true' if should_scan else 'false'}\n")
+          PY
+
+  scan:
+    needs: [preflight, gate]
+    if: ${{ needs.preflight.outputs.configured == 'true' && needs.gate.outputs.should_scan == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -99,65 +166,13 @@ jobs:
       - name: Verschlüsselten State laden
         run: scripts/restore_state.sh
 
-      - name: Automatik-Frische prüfen
-        id: fallback_guard
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          DISPATCH_SOURCE: ${{ github.event.inputs.source || '' }}
-        run: |
-          python - <<'PY'
-          import json
-          import os
-          from datetime import datetime, timezone
-          from pathlib import Path
-
-          event_name = os.environ.get("EVENT_NAME", "")
-          source = os.environ.get("DISPATCH_SOURCE", "")
-          automated = event_name == "schedule" or source == "cloudflare"
-          should_scan = True
-
-          if automated:
-              state_path = Path("data/state.json")
-              settings = json.loads(Path("config/settings.json").read_text(encoding="utf-8"))
-              max_age = int(settings.get("fallback_skip_if_success_within_minutes", 165))
-              try:
-                  state = json.loads(state_path.read_text(encoding="utf-8"))
-              except Exception:
-                  state = {}
-              last = state.get("last_successful_scan_at")
-              if last:
-                  try:
-                      then = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
-                      age_minutes = (datetime.now(timezone.utc) - then).total_seconds() / 60
-                      if age_minutes < max_age:
-                          should_scan = False
-                          print(
-                              f"Automatik-Trigger übersprungen: letzter erfolgreicher Deep-Scan "
-                              f"vor {age_minutes:.0f} Minuten (< {max_age})."
-                          )
-                  except ValueError:
-                      pass
-              if should_scan:
-                  print(
-                      f"Automatik-Trigger ({source or event_name}) führt Deep-Scan aus: "
-                      "kein ausreichend frischer erfolgreicher Lauf gefunden."
-                  )
-          else:
-              print("Manueller Lauf: Deep-Scan wird unabhängig vom Frische-Guard ausgeführt.")
-
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
-              handle.write(f"should_scan={'true' if should_scan else 'false'}\n")
-          PY
-
       - name: Konfiguration prüfen
         run: python -m psa_sniper doctor
 
       - name: eBay scannen
-        if: ${{ steps.fallback_guard.outputs.should_scan == 'true' }}
         run: python -m psa_sniper scan
 
       - name: Erfolgreichen Deep-Scan markieren
-        if: ${{ steps.fallback_guard.outputs.should_scan == 'true' }}
         run: |
           python - <<'PY'
           import json
