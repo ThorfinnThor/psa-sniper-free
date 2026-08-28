@@ -92,6 +92,44 @@ def test_direct_web_429_is_nonfatal_and_stops_more_web_lookups(monkeypatch):
     assert calls == 1
 
 
+def test_validate_access_token_marks_success_without_exposing_token(monkeypatch):
+    client = PSAClient(
+        access_token="secret-test-token",
+        web_fallback=False,
+        delay_seconds=0,
+        max_calls=2,
+    )
+
+    response = requests.Response()
+    response.status_code = 200
+    response.url = "https://api.psacard.com/publicapi/cert/GetByCertNumber/67205095"
+    response._content = b'{"IsValidRequest":true,"CertNumber":"67205095","Grade":"10"}'
+
+    monkeypatch.setattr(client.session, "get", lambda *args, **kwargs: response)
+
+    assert client.validate_access_token() == "ok"
+    assert client.api_successes == 1
+    assert client.access_token == "secret-test-token"
+
+
+def test_validate_access_token_marks_rejected_and_disables_bad_token(monkeypatch):
+    client = PSAClient(
+        access_token="bad-token",
+        web_fallback=True,
+        delay_seconds=0,
+        max_calls=2,
+    )
+
+    response = requests.Response()
+    response.status_code = 401
+    response.url = "https://api.psacard.com/publicapi/cert/GetByCertNumber/67205095"
+    monkeypatch.setattr(client.session, "get", lambda *args, **kwargs: response)
+
+    assert client.validate_access_token() == "abgelehnt"
+    assert client.access_token is None
+    assert client.api_successes == 0
+
+
 def test_recent_sales_stops_before_duplicate_mobile_sales_block():
     text = """
 Sales of Similar Items
