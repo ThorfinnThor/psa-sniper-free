@@ -24,6 +24,10 @@ STOPWORDS = {
     "pokemon", "one", "piece", "topps", "panini", "psa", "gem", "mint", "chrome",
 }
 
+# A Kauf-Hit must have a usable price signal, not only rarity/title signals.
+MIN_VERIFIED_PRICE_EDGE = 0.10
+UNVERIFIED_HIT_SCORE_CAP = 10
+
 
 def is_psa10(grade: str | None) -> bool:
     grade_n = normalize_text(grade)
@@ -130,6 +134,16 @@ def _overprice_penalty(confidence: str, discount_pct: float) -> int:
     return 2
 
 
+def _gate_label(price_status: str) -> str:
+    return {
+        "unverified": "Preis-Gate: kein belastbarer Preisindikator – nur Beobachtung",
+        "weak_indicator": "Preis-Gate: Preisquelle zu schwach – nur Beobachtung",
+        "no_edge": "Preis-Gate: weniger als 10 % bestätigter Preisvorteil – nur Beobachtung",
+        "over_market": "Preis-Gate: Angebot liegt über dem Preisindikator – kein Kauf-Hit",
+        "auction": "Preis-Gate: Auktion ohne belastbaren Endpreis – nur Beobachtung",
+    }.get(price_status, "Preis-Gate: Kaufpreis nicht ausreichend bestätigt – nur Beobachtung")
+
+
 def score_hit(
     listing: Listing,
     *,
@@ -144,71 +158,90 @@ def score_hit(
     score = 0
     reasons: list[str] = []
     warnings: list[str] = []
+    score_breakdown: list[dict[str, object]] = []
     title_n = normalize_text(listing.title)
+
+    def adjust(points: int, label: str, kind: str | None = None) -> None:
+        nonlocal score
+        score += points
+        if kind is None:
+            kind = "positive" if points > 0 else "negative" if points < 0 else "neutral"
+        score_breakdown.append({"points": points, "label": label, "kind": kind})
 
     title_psa10 = any(
         marker in title_n for marker in ("psa 10", "psa10", "gem mt 10", "gem mint 10")
     )
     if title_psa10:
-        score += 2
+        adjust(2, "PSA 10 im Listing angegeben")
         reasons.append("PSA 10 im Listing angegeben")
 
     if cert_number:
-        score += 1
-        reasons.append(f"PSA-Cert erkannt ({cert_source or 'Listing'})")
+        label = f"PSA-Cert erkannt ({cert_source or 'Listing'})"
+        adjust(1, label)
+        reasons.append(label)
 
     overlap = identity_overlap(listing, cert)
     cert_trusted = True
     if cert and is_psa10(cert.grade):
-        score += 2
+        adjust(2, "PSA-Cert bestätigt GEM MT 10")
         reasons.append("PSA-Cert bestätigt GEM MT 10")
     elif cert and cert.grade:
-        score -= 20
+        label = f"Cert-Grade ist {cert.grade}, nicht PSA 10"
+        adjust(-20, label)
         cert_trusted = False
-        warnings.append(f"Cert-Grade ist {cert.grade}, nicht PSA 10")
+        warnings.append(label)
 
     if cert and cert_source and cert_source.startswith("OCR"):
         confidence = cert_confidence or 0.0
         if confidence < 0.7 and overlap == 0:
+            label = "OCR-Cert passt nicht plausibel zum Listing; POP/Preis werden ignoriert"
+            adjust(-7, label)
             cert_trusted = False
-            score -= 7
-            warnings.append("OCR-Cert passt nicht plausibel zum Listing; POP/Preis werden ignoriert")
+            warnings.append(label)
         elif overlap == 0:
-            score -= 2
-            warnings.append("OCR-Cert hat keine erkennbare Titelüberschneidung")
+            label = "OCR-Cert hat keine erkennbare Titelüberschneidung"
+            adjust(-2, label)
+            warnings.append(label)
         else:
-            reasons.append("OCR-Cert passt inhaltlich zum Listing")
+            label = "OCR-Cert passt inhaltlich zum Listing"
+            adjust(0, label)
+            reasons.append(label)
 
     if cert and cert_trusted and cert.population is not None:
         pop = cert.population
         if pop <= 3:
-            score += 5
-            reasons.append(f"sehr niedrige PSA-10-Population: {pop}")
+            label, points = f"sehr niedrige PSA-10-Population: {pop}", 5
         elif pop <= 10:
-            score += 4
-            reasons.append(f"niedrige PSA-10-Population: {pop}")
+            label, points = f"niedrige PSA-10-Population: {pop}", 4
         elif pop <= 25:
-            score += 3
-            reasons.append(f"PSA-10-Population: {pop}")
+            label, points = f"PSA-10-Population: {pop}", 3
         elif pop <= 50:
-            score += 1
-            reasons.append(f"moderat niedrige PSA-10-Population: {pop}")
+            label, points = f"moderat niedrige PSA-10-Population: {pop}", 1
+        else:
+            label, points = "", 0
+        if points:
+            adjust(points, label)
+            reasons.append(label)
 
     gaps = info_gap(listing, cert if cert_trusted else None)
+    for gap in gaps[:4]:
+        adjust(1, gap)
     if gaps:
-        score += min(4, len(gaps))
         reasons.extend(gaps)
 
     if not any(term in title_n for term in HYPE_TERMS):
-        score += 1
-        reasons.append("Verkäufer vermarktet keinen Low-Pop-/Investment-Hype")
+        label = "Verkäufer vermarktet keinen Low-Pop-/Investment-Hype"
+        adjust(1, label)
+        reasons.append(label)
     else:
-        score -= 2
-        warnings.append("Verkäufer bewirbt Seltenheit bereits aktiv")
+        label = "Verkäufer bewirbt Seltenheit bereits aktiv"
+        adjust(-2, label)
+        warnings.append(label)
 
     if len(listing.title.split()) <= 8:
-        score += 1
-        reasons.append("kurzer bzw. informationsarmer Titel")
+        label = "kurzer bzw. informationsarmer Titel"
+        adjust(1, label)
+        reasons.append(label)
 
     identity_text = " ".join(
         value
@@ -222,11 +255,13 @@ def score_hit(
     )
     identity_n = normalize_text(identity_text)
     if priority_terms and any(normalize_text(term) in identity_n for term in priority_terms):
-        score += 3
-        reasons.append("trifft einen konfigurierten Prioritätsbegriff")
+        label = "trifft einen konfigurierten Prioritätsbegriff"
+        adjust(3, label)
+        reasons.append(label)
     elif demand_terms and any(normalize_text(term) in identity_n for term in demand_terms):
-        score += 1
-        reasons.append("erkennbare Nachfrage-/Sammlerrelevanz")
+        label = "erkennbare Nachfrage-/Sammlerrelevanz"
+        adjust(1, label)
+        reasons.append(label)
 
     if cert and cert.year:
         year_match = re.search(r"(?:19|20)\d{2}", cert.year)
@@ -234,26 +269,34 @@ def score_hit(
             card_year = int(year_match.group(0))
             current_year = datetime.now(timezone.utc).year
             if card_year >= current_year - 1:
-                score -= 2
-                warnings.append("sehr neue Karte: Population kann noch schnell steigen")
+                label = "sehr neue Karte: Population kann noch schnell steigen"
+                adjust(-2, label)
+                warnings.append(label)
             elif card_year <= current_year - 4:
-                score += 1
-                reasons.append("ältere/reifere Population")
+                label = "ältere/reifere Population"
+                adjust(1, label)
+                reasons.append(label)
 
+    price_status = "unverified"
     if listing.pure_auction:
-        score -= 3
-        warnings.append("reine Auktion: aktueller Preis ist kein Sofortkauf-Fehlpreis")
+        label = "reine Auktion: aktueller Preis ist kein Sofortkauf-Fehlpreis"
+        adjust(-3, label)
+        warnings.append(label)
+        price_status = "auction"
 
     if listing.seller_feedback_percentage is not None:
         if listing.seller_feedback_percentage < 95:
-            score -= 4
-            warnings.append("Verkäuferbewertung unter 95 %")
+            label = "Verkäuferbewertung unter 95 %"
+            adjust(-4, label)
+            warnings.append(label)
         elif listing.seller_feedback_percentage < 98:
-            score -= 2
-            warnings.append("Verkäuferbewertung unter 98 %")
+            label = "Verkäuferbewertung unter 98 %"
+            adjust(-2, label)
+            warnings.append(label)
     if listing.seller_feedback_score is not None and listing.seller_feedback_score < 10:
-        score -= 1
-        warnings.append("sehr wenige Verkäuferbewertungen")
+        label = "sehr wenige Verkäuferbewertungen"
+        adjust(-1, label)
+        warnings.append(label)
 
     discount_pct: float | None = None
     market_raw = market_value_listing_currency
@@ -261,39 +304,71 @@ def score_hit(
         market_raw = MarketValue(market_raw, "manueller/Legacy-Preisindikator", "hoch", 1)
     market = market_raw if cert_trusted else None
     acquisition = listing.total_cost
-    if market and acquisition and market.money.value > 0 and not listing.pure_auction:
+
+    if not listing.pure_auction and market and acquisition and market.money.value > 0:
         discount_pct = 1.0 - acquisition.value / market.money.value
-        if market.confidence == "hoch":
+        confidence = market.confidence.casefold()
+        if confidence in {"hoch", "mittel"} and discount_pct >= MIN_VERIFIED_PRICE_EDGE:
+            price_status = "verified_edge"
+        elif confidence == "niedrig":
+            price_status = "weak_indicator"
+        elif discount_pct <= -0.10:
+            price_status = "over_market"
+        else:
+            price_status = "no_edge"
+
+        if confidence == "hoch":
             points = (7, 5, 3)
-        elif market.confidence == "mittel":
+        elif confidence == "mittel":
             points = (5, 4, 2)
         else:
             points = (3, 2, 1)
+
         if discount_pct >= 0.40:
-            score += points[0]
-            reasons.append(f"Gesamtkosten ca. {discount_pct:.0%} unter Vergleichswert")
+            label = f"Gesamtkosten ca. {discount_pct:.0%} unter Vergleichswert"
+            adjust(points[0], label)
+            reasons.append(label)
         elif discount_pct >= 0.25:
-            score += points[1]
-            reasons.append(f"Gesamtkosten ca. {discount_pct:.0%} unter Vergleichswert")
+            label = f"Gesamtkosten ca. {discount_pct:.0%} unter Vergleichswert"
+            adjust(points[1], label)
+            reasons.append(label)
         elif discount_pct >= 0.15:
-            score += points[2]
-            reasons.append(f"Gesamtkosten ca. {discount_pct:.0%} unter Vergleichswert")
+            label = f"Gesamtkosten ca. {discount_pct:.0%} unter Vergleichswert"
+            adjust(points[2], label)
+            reasons.append(label)
+        elif discount_pct >= MIN_VERIFIED_PRICE_EDGE and confidence in {"hoch", "mittel"}:
+            adjust(0, f"Preisvorteil ca. {discount_pct:.0%} bestätigt; unter der Bonusgrenze")
         elif discount_pct <= -0.10:
-            penalty = _overprice_penalty(market.confidence, discount_pct)
-            score -= penalty
-            warnings.append(f"Gesamtkosten ca. {-discount_pct:.0%} über dem Preisindikator")
-            # A high-confidence market signal should be a hard gate for a sniper.
-            if market.confidence == "hoch" and discount_pct <= -0.25:
-                score = min(score, 5)
-            elif market.confidence == "mittel" and discount_pct <= -0.50:
-                score = min(score, 6)
-        if market.confidence == "niedrig":
-            warnings.append("Preisvergleich basiert nur auf PSA Estimate, nicht auf mehreren Sales")
+            penalty = _overprice_penalty(confidence, discount_pct)
+            label = f"Gesamtkosten ca. {-discount_pct:.0%} über dem Preisindikator"
+            adjust(-penalty, label)
+            warnings.append(label)
+            if confidence == "hoch" and discount_pct <= -0.25 and score > 5:
+                adjust(5 - score, "Hard Gate: deutlich über hoch-vertrauenswürdigem Preisindikator", "gate")
+            elif confidence == "mittel" and discount_pct <= -0.50 and score > 6:
+                adjust(6 - score, "Hard Gate: deutlich über mittlerem Preisindikator", "gate")
+        else:
+            adjust(0, "Kein bestätigter Preisvorteil von mindestens 10 %")
+
+        if confidence == "niedrig":
+            label = "Preisvergleich basiert nur auf PSA Estimate, nicht auf mehreren Sales"
+            warnings.append(label)
+            adjust(0, label)
+    elif not listing.pure_auction:
+        label = "Kein belastbarer Preisindikator verfügbar"
+        warnings.append(label)
+        adjust(0, label)
 
     if listing.shipping and listing.price and listing.shipping.currency == listing.price.currency:
         if listing.price.value > 0 and listing.shipping.value / listing.price.value >= 0.25:
-            score -= 1
-            warnings.append("hohe Versandkosten im Verhältnis zum Kartenpreis")
+            label = "hohe Versandkosten im Verhältnis zum Kartenpreis"
+            adjust(-1, label)
+            warnings.append(label)
+
+    # Rarity/title quality can make a card interesting, but not a purchase hit on its own.
+    # Keep such listings visible as observations while preventing a misleading Hit label.
+    if price_status != "verified_edge" and score > UNVERIFIED_HIT_SCORE_CAP:
+        adjust(UNVERIFIED_HIT_SCORE_CAP - score, _gate_label(price_status), "gate")
 
     return ScoredHit(
         listing=listing,
@@ -307,4 +382,6 @@ def score_hit(
         cert_trusted=cert_trusted,
         market_value=market,
         discount_pct=discount_pct,
+        price_status=price_status,
+        score_breakdown=score_breakdown,
     )

@@ -8,7 +8,7 @@ from typing import Any
 from .models import MarketValue, PSACertInfo, RunStats, ScoredHit
 from .util import iso_z, parse_iso_datetime, utc_now
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 PERSONAL_HISTORY_FIELDS = {
     "seller",
     "seller_feedback_percentage",
@@ -292,6 +292,8 @@ def hit_to_record(hit: ScoredHit, threshold: int) -> dict[str, Any]:
         "is_hit": hit.score >= threshold,
         "reasons": hit.reasons,
         "warnings": hit.warnings,
+        "score_breakdown": hit.score_breakdown,
+        "price_status": hit.price_status,
         "cert_number": hit.cert_number,
         "cert_source": hit.cert_source,
         "cert_confidence": hit.cert_confidence,

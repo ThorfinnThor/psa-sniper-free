@@ -34,7 +34,7 @@
     <section id="dashboardView" class="dashboard hidden" aria-live="polite">
       <header class="topbar">
         <div>
-          <p class="eyebrow">PSA 10 · LOW POP · INFORMATION GAP</p>
+          <p class="eyebrow">PSA 10 · LOW POP · PREISVORTEIL · INFORMATION GAP</p>
           <h1>PSA Sniper</h1>
           <p id="updatedAt" class="muted compact"></p>
         </div>
@@ -46,7 +46,7 @@
 
       <section id="stats" class="stats-grid" aria-label="Kennzahlen"></section>
 
-      <section class="control-panel" aria-label="Treffer filtern">
+      <section class="control-panel" aria-label="Ergebnisse filtern">
         <div class="control-row grow-row">
           <label class="search-field">
             <span>Suche</span>
@@ -77,7 +77,7 @@
         </div>
         <div class="chip-row" id="viewChips" role="group" aria-label="Trefferart">
           <button class="chip active" data-view="all" type="button">Alle</button>
-          <button class="chip" data-view="hits" type="button">🔥 Hits</button>
+          <button class="chip" data-view="hits" type="button">🔥 Kauf-Hits</button>
           <button class="chip" data-view="watch" type="button">Beobachtung</button>
           <button class="chip" data-view="fixed" type="button">Sofortkauf</button>
           <button class="chip" data-view="auction" type="button">Auktion</button>
@@ -91,14 +91,14 @@
       </section>
 
       <div class="result-bar">
-        <p id="resultCount">0 Treffer</p>
+        <p id="resultCount">0 Ergebnisse</p>
         <button id="resetFilters" class="text-button" type="button">Filter zurücksetzen</button>
       </div>
 
-      <section id="hitGrid" class="hit-grid" aria-label="Treffer"></section>
+      <section id="hitGrid" class="hit-grid" aria-label="Ergebnisse"></section>
       <section id="emptyState" class="empty hidden">
         <div class="empty-icon">◎</div>
-        <h2>Keine Treffer für diesen Filter</h2>
+        <h2>Keine Ergebnisse für diesen Filter</h2>
         <p>Filter zurücksetzen oder auf den nächsten Scanner-Lauf warten.</p>
       </section>
 
@@ -108,7 +108,7 @@
       </details>
 
       <footer>
-        <p>Score und Preisindikatoren sind Screening-Signale, keine Wertgarantie. Cert, Listing, Verkäufer und echte Verkäufe vor dem Kauf selbst prüfen.</p>
+        <p><strong>Kauf-Hit</strong> bedeutet jetzt: ausreichender Score <em>und</em> mindestens 10 % bestätigter Preisvorteil aus einer brauchbaren Preisquelle. Low POP oder ein informationsarmer Titel allein sind nur Beobachtung. Alle Signale bleiben Screening-Hinweise, keine Wertgarantie; Listing, Cert, Verkäufer und echte Verkäufe vor dem Kauf selbst prüfen.</p>
       </footer>
     </section>
   </main>

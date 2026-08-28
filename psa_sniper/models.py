@@ -96,6 +96,8 @@ class ScoredHit:
     cert_trusted: bool = True
     market_value: MarketValue | None = None
     discount_pct: float | None = None
+    price_status: str = "unverified"
+    score_breakdown: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(slots=True)

@@ -41,6 +41,8 @@ def test_low_pop_information_gap_scores_as_hit_and_uses_shipping():
     )
     assert hit.score >= 20
     assert hit.discount_pct == 0.5
+    assert hit.price_status == "verified_edge"
+    assert sum(int(row["points"]) for row in hit.score_breakdown) == hit.score
     assert any("population" in reason.casefold() for reason in hit.reasons)
     assert any("variante" in reason.casefold() for reason in hit.reasons)
 
@@ -63,6 +65,8 @@ def test_pure_auction_does_not_receive_discount_points():
         market_value_listing_currency=MarketValue(Money(100, "EUR"), "Sales", "hoch", 3),
     )
     assert hit.discount_pct is None
+    assert hit.price_status == "auction"
+    assert hit.score <= 10
     assert any("auktion" in warning.casefold() for warning in hit.warnings)
 
 
@@ -96,6 +100,7 @@ def test_untrusted_ocr_cert_cannot_create_fake_low_pop_discount_hit():
     )
     assert not hit.cert_trusted
     assert hit.discount_pct is None
+    assert hit.price_status == "unverified"
     assert any("ocr-cert" in warning.casefold() for warning in hit.warnings)
 
 
@@ -121,5 +126,42 @@ def test_high_confidence_overpriced_listing_is_hard_gated_below_dashboard_thresh
     )
     assert hit.discount_pct is not None
     assert round(hit.discount_pct, 2) == -1.8
+    assert hit.price_status == "over_market"
     assert hit.score <= 5
     assert any("über dem preisindikator" in warning.casefold() for warning in hit.warnings)
+
+
+def test_low_pop_new_card_without_price_signal_is_watch_not_hit():
+    listing = Listing(
+        item_id="elfun",
+        title="POKEMON ELFUN EX 165 PSA 10 GEM MINT DE",
+        url="https://www.ebay.de/itm/elfun",
+        price=Money(105.99, "EUR"),
+        created_at=datetime.now(timezone.utc),
+        buying_options=["FIXED_PRICE"],
+    )
+    cert = PSACertInfo(
+        cert_number="131778450",
+        valid=True,
+        grade="GEM MT 10",
+        year="2025",
+        brand_title="POKEMON GERMAN WHT DE-WHITE FLARE",
+        subject="WHIMSICOTT ex",
+        card_number="165",
+        variety="SPECIAL ILLUSTRATION RARE",
+        population=9,
+    )
+    hit = score_hit(
+        listing,
+        cert_number="131778450",
+        cert_source="OCR (Fallback)",
+        cert_confidence=0.95,
+        cert=cert,
+        market_value_listing_currency=None,
+        priority_terms=[],
+        demand_terms=[],
+    )
+    assert hit.price_status == "unverified"
+    assert hit.score <= 10
+    assert any(row.get("kind") == "gate" for row in hit.score_breakdown)
+    assert any("kein belastbarer preisindikator" in warning.casefold() for warning in hit.warnings)

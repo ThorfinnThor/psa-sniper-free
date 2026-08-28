@@ -165,7 +165,7 @@ function renderAll() {
   renderStats(all);
   renderHealth();
   const rows = filterAndSort(all);
-  $('resultCount').textContent = `${rows.length} ${rows.length === 1 ? 'Treffer' : 'Treffer'}`;
+  $('resultCount').textContent = `${rows.length} ${rows.length === 1 ? 'Ergebnis' : 'Ergebnisse'}`;
   const grid = $('hitGrid');
   grid.replaceChildren(...rows.map(renderCard));
   $('emptyState').classList.toggle('hidden', rows.length !== 0);
@@ -213,7 +213,6 @@ function nullLast(a, b, ascending) {
 function searchBlob(row) {
   return normalize([
     row.title,
-    row.seller,
     row.cert_number,
     row.cert?.year,
     row.cert?.brand_title,
@@ -221,6 +220,8 @@ function searchBlob(row) {
     row.cert?.card_number,
     row.cert?.variety,
     ...(row.reasons || []),
+    ...(row.warnings || []),
+    ...((row.score_breakdown || []).map(item => item.label)),
   ].filter(Boolean).join(' '));
 }
 
@@ -242,10 +243,10 @@ function renderStats(rows) {
   const medianDiscount = discounts.length ? median(discounts) : null;
   const latestRun = state.payload.runs?.[0];
   const cards = [
-    ['Hits', hits, 'ab deinem Schwellenwert'],
-    ['Sehr stark', strong, 'Score 16 oder höher'],
+    ['Kauf-Hits', hits, 'Score + bestätigter Preisvorteil'],
+    ['Score-stark', strong, 'Signalstärke, noch kein Kaufurteil'],
     ['POP ≤ 10', lowPop, 'bestätigte Cert-Daten'],
-    ['Median-Abstand', medianDiscount == null ? '–' : percent(medianDiscount), 'nur verfügbare Preisindikatoren'],
+    ['Median-Abstand', medianDiscount == null ? '–' : distanceLabel(medianDiscount), 'nur verfügbare Preisindikatoren'],
     ['Letzter Scan', latestRun ? Number(latestRun.fresh_listings || 0) : '–', 'frische Listings'],
   ];
   $('stats').replaceChildren(...cards.map(([label, value, note]) => {
@@ -267,8 +268,73 @@ function renderHealth() {
   pill.style.color = ageHours <= 1.5 ? 'var(--good)' : 'var(--warn)';
 }
 
+function decisionInfo(row) {
+  const status = row.price_status || 'unverified';
+  const discount = Number(row.discount_pct);
+  if (status === 'verified_edge') {
+    if (row.is_hit) {
+      return {
+        tone: 'good',
+        title: 'Kauf-Hit: Preisvorteil bestätigt',
+        text: Number.isFinite(discount)
+          ? `${distanceLabel(discount)} gegenüber dem Preisindikator; Score ${row.score ?? '–'} erreicht die Hit-Schwelle.`
+          : 'Belastbarer Preisvorteil und ausreichender Score sind bestätigt.',
+      };
+    }
+    return {
+      tone: 'info',
+      title: 'Beobachtung: Preisvorteil vorhanden',
+      text: 'Der Preis wirkt interessant, aber die übrigen Signale reichen noch nicht für einen Kauf-Hit.',
+    };
+  }
+  if (status === 'weak_indicator') {
+    return {
+      tone: 'warn',
+      title: 'Beobachtung: Preisquelle zu schwach',
+      text: 'Der Score kann durch Low POP und Listing-Lücken hoch sein, aber der Preis basiert nur auf einem schwachen Indikator wie PSA Estimate.',
+    };
+  }
+  if (status === 'no_edge') {
+    return {
+      tone: 'warn',
+      title: 'Beobachtung: kein ausreichender Preisvorteil',
+      text: Number.isFinite(discount)
+        ? `${distanceLabel(discount)} zum Vergleichswert. Für einen Kauf-Hit verlangen wir mindestens 10 % bestätigten Preisvorteil.`
+        : 'Für einen Kauf-Hit verlangen wir mindestens 10 % bestätigten Preisvorteil.',
+    };
+  }
+  if (status === 'over_market') {
+    return {
+      tone: 'bad',
+      title: 'Kein Kauf-Hit: über dem Preisindikator',
+      text: Number.isFinite(discount)
+        ? `${distanceLabel(discount)} zum Vergleichswert. Seltenheit allein macht daraus keinen guten Kauf.`
+        : 'Das Angebot liegt über dem Preisindikator.',
+    };
+  }
+  if (status === 'auction') {
+    return {
+      tone: 'warn',
+      title: 'Beobachtung: Auktionspreis nicht belastbar',
+      text: 'Der aktuelle Gebotsstand ist kein verlässlicher Kaufpreis. Deshalb kein Kauf-Hit vor Auktionsende.',
+    };
+  }
+  return {
+    tone: 'warn',
+    title: 'Beobachtung: Preis nicht verifiziert',
+    text: 'Low POP, PSA 10 und ein informationsarmer Titel können den Score erhöhen. Ohne belastbaren Vergleichspreis ist das aber ausdrücklich kein Kauf-Hit.',
+  };
+}
+
+function renderDecision(row, compact = false) {
+  const info = decisionInfo(row);
+  const box = el('div', `decision-box ${info.tone} ${compact ? 'compact-decision' : ''}`);
+  box.append(el('strong', 'decision-title', info.title), el('p', 'decision-text', info.text));
+  return box;
+}
+
 function renderCard(row) {
-  const card = el('article', `hit-card ${Number(row.score || 0) >= 16 ? 'strong' : ''}`);
+  const card = el('article', `hit-card ${row.is_hit ? 'purchase-hit' : ''} ${Number(row.score || 0) >= 16 ? 'strong' : ''}`);
   const media = el('div', 'card-media');
   if (row.image_url) {
     const image = document.createElement('img');
@@ -285,7 +351,7 @@ function renderCard(row) {
     media.append(el('div', 'image-placeholder', 'PSA 10'));
   }
   const badges = el('div', 'card-badges');
-  const score = el('span', `score-badge ${Number(row.score || 0) >= 16 ? 'hot' : ''}`, `Score ${row.score ?? 0}`);
+  const score = el('span', `score-badge ${row.is_hit ? 'hot' : ''}`, `Score ${row.score ?? 0}`);
   const type = el('span', 'type-badge', row.pure_auction ? 'Auktion' : 'Sofortkauf');
   badges.append(score, type);
   media.append(badges);
@@ -301,14 +367,12 @@ function renderCard(row) {
     metric('PSA-10-POP', row.cert?.population ?? '–'),
     metric('Abstand', row.discount_pct == null ? '–' : distanceLabel(row.discount_pct), row.discount_pct >= .15),
   );
-  content.append(metrics);
+  content.append(metrics, renderDecision(row));
 
   if (row.reasons?.length) content.append(list(row.reasons.slice(0, 5), 'reason-list'));
-  if (row.warnings?.length) content.append(list(row.warnings.slice(0, 3), 'reason-list warning-list'));
+  if (row.warnings?.length) content.append(list(row.warnings.slice(0, 4), 'reason-list warning-list'));
 
   const sellerBits = [];
-  if (row.seller) sellerBits.push(row.seller);
-  if (row.seller_feedback_percentage != null) sellerBits.push(`${row.seller_feedback_percentage}% positiv`);
   if (row.created_at) sellerBits.push(`eingestellt ${formatRelative(row.created_at)}`);
   if (sellerBits.length) content.append(el('p', 'seller-line', sellerBits.join(' · ')));
 
@@ -317,7 +381,7 @@ function renderCard(row) {
   ebay.href = row.url;
   ebay.target = '_blank';
   ebay.rel = 'noopener noreferrer';
-  const more = el('button', 'more-button', state.expanded.has(row.item_id) ? 'Weniger' : 'Details');
+  const more = el('button', 'more-button', state.expanded.has(row.item_id) ? 'Weniger' : 'Warum? / Details');
   more.type = 'button';
   more.addEventListener('click', () => {
     if (state.expanded.has(row.item_id)) state.expanded.delete(row.item_id);
@@ -361,6 +425,33 @@ function statusButtons(row) {
   return wrap;
 }
 
+function formatPoints(value) {
+  const points = Number(value || 0);
+  return points > 0 ? `+${points}` : String(points);
+}
+
+function renderScoreBreakdown(row) {
+  const section = el('section', 'score-breakdown');
+  section.append(el('h4', 'score-breakdown-title', `Warum Score ${row.score ?? '–'}?`));
+  const items = Array.isArray(row.score_breakdown) ? row.score_breakdown : [];
+  if (!items.length) {
+    section.append(el('p', 'score-breakdown-empty', 'Älterer Eintrag: Für diesen Scan wurde noch keine einzelne Punktaufschlüsselung gespeichert.'));
+    return section;
+  }
+  const listNode = el('div', 'score-breakdown-list');
+  items.forEach(item => {
+    const points = Number(item.points || 0);
+    const kind = item.kind || (points > 0 ? 'positive' : points < 0 ? 'negative' : 'neutral');
+    const rowNode = el('div', `score-breakdown-row ${kind}`);
+    rowNode.append(el('span', 'score-points', formatPoints(points)), el('span', 'score-label', item.label || 'Signal'));
+    listNode.append(rowNode);
+  });
+  const total = el('div', 'score-breakdown-total');
+  total.append(el('strong', '', 'Endscore'), el('strong', '', String(row.score ?? '–')));
+  section.append(listNode, total);
+  return section;
+}
+
 function renderDetails(row) {
   const box = el('div', 'detail-box');
   const lines = [
@@ -371,6 +462,7 @@ function renderDetails(row) {
     row.matched_queries?.length ? `Gefunden über ${row.matched_queries.length} Suchabfrage(n)` : null,
   ].filter(Boolean);
   lines.forEach(line => box.append(el('div', '', line)));
+  box.append(renderScoreBreakdown(row));
   if (row.cert?.source_url) {
     const link = el('a', '', 'PSA-Cert öffnen');
     link.href = row.cert.source_url;
@@ -388,8 +480,6 @@ function runKey(run) {
 function runResults(run) {
   if (Array.isArray(run.results)) return run.results;
 
-  // Legacy fallback for runs created before per-run snapshots existed. History rows
-  // receive first_seen_at during the scan, so they can usually be mapped back to it.
   const archive = Array.isArray(state.payload?.archive_hits) ? state.payload.archive_hits : [];
   const start = Date.parse(run.started_at || '');
   const end = Date.parse(run.completed_at || '');
@@ -404,7 +494,7 @@ function renderRunResult(item, legacy = false) {
   const card = el('article', 'run-result-card');
   const head = el('div', 'run-result-head');
   const badges = el('div', 'run-result-badges');
-  badges.append(el('span', `run-result-badge ${item.is_hit ? 'hit' : 'watch'}`, item.is_hit ? 'Hit' : 'Beobachtung'));
+  badges.append(el('span', `run-result-badge ${item.is_hit ? 'hit' : 'watch'}`, item.is_hit ? 'Kauf-Hit' : 'Beobachtung'));
   if (legacy) badges.append(el('span', 'run-result-badge legacy', 'Historisch zugeordnet'));
   head.append(badges, el('strong', 'run-result-score', `Score ${item.score ?? '–'}`));
   card.append(head, el('h3', 'run-result-title', item.title || 'Ohne Titel'));
@@ -418,7 +508,7 @@ function renderRunResult(item, legacy = false) {
     metric('POP', item.cert?.population ?? '–'),
     metric('Abstand', item.discount_pct == null ? '–' : distanceLabel(item.discount_pct), item.discount_pct >= .15),
   );
-  card.append(metrics);
+  card.append(metrics, renderDecision(item, true));
 
   const detailBits = [];
   if (item.market_value) detailBits.push(`Preisindikator ${money(item.market_value.money)}`);
@@ -458,7 +548,7 @@ function renderRunPanel(run, results) {
   }
 
   if (legacy) {
-    panel.append(el('p', 'run-results-note', 'Legacy-Zuordnung anhand des Zeitstempels. Die heutige Sniper-Logik kann diese Karte inzwischen anders bewerten.'));
+    panel.append(el('p', 'run-results-note', 'Legacy-Zuordnung anhand des Zeitstempels. Die heutige Kauf-Hit-Logik kann diese Karte inzwischen anders bewerten.'));
   }
   const grid = el('div', 'run-results-grid');
   grid.replaceChildren(...results.map(item => renderRunResult(item, legacy)));
