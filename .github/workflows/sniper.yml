@@ -2,10 +2,13 @@ name: PSA Sniper
 
 on:
   workflow_dispatch:
-  schedule:
-    # GitHub-Scheduler-Heartbeat alle 5 Minuten, bewusst nicht auf Minute 0.
-    # Der teure Deep-Scan wird unten per State-Guard auf mindestens 180 Minuten Abstand begrenzt.
-    - cron: "2,7,12,17,22,27,32,37,42,47,52,57 * * * *"
+  workflow_call:
+    inputs:
+      automated:
+        description: "True when called by the dedicated scheduler workflow"
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: psa-sniper-live
@@ -53,13 +56,13 @@ jobs:
       - name: Deep-Scan-Frische prüfen
         id: guard
         env:
-          EVENT_NAME: ${{ github.event_name }}
+          AUTOMATED: ${{ inputs.automated }}
         shell: bash
         run: |
           set -euo pipefail
 
-          # Ein manueller Run soll immer sofort scannen.
-          if [[ "$EVENT_NAME" != "schedule" ]]; then
+          # Direkte workflow_dispatch-Läufe sollen immer sofort scannen.
+          if [[ "$AUTOMATED" != "true" ]]; then
             echo "should_scan=true" >> "$GITHUB_OUTPUT"
             echo "Manueller Lauf: Deep-Scan wird sofort ausgeführt."
             exit 0
@@ -91,18 +94,18 @@ jobs:
                   if age_minutes < min_age:
                       should_scan = False
                       print(
-                          f"Heartbeat: letzter erfolgreicher Deep-Scan vor {age_minutes:.0f} Minuten; "
+                          f"Scheduler: letzter erfolgreicher Deep-Scan vor {age_minutes:.0f} Minuten; "
                           f"warte bis mindestens {min_age} Minuten."
                       )
                   else:
                       print(
-                          f"Heartbeat: letzter erfolgreicher Deep-Scan vor {age_minutes:.0f} Minuten; "
+                          f"Scheduler: letzter erfolgreicher Deep-Scan vor {age_minutes:.0f} Minuten; "
                           "Deep-Scan ist fällig."
                       )
               except ValueError:
-                  print("Heartbeat: State-Zeitstempel unlesbar; sicherheitshalber Deep-Scan ausführen.")
+                  print("Scheduler: State-Zeitstempel unlesbar; sicherheitshalber Deep-Scan ausführen.")
           else:
-              print("Heartbeat: kein erfolgreicher State-Snapshot gefunden; Deep-Scan ausführen.")
+              print("Scheduler: kein erfolgreicher State-Snapshot gefunden; Deep-Scan ausführen.")
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
               handle.write(f"should_scan={'true' if should_scan else 'false'}\n")
