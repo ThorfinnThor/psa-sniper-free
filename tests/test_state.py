@@ -1,4 +1,5 @@
-from psa_sniper.state import default_state, migrate_state, select_queries
+from psa_sniper.models import RunStats
+from psa_sniper.state import append_run, default_state, migrate_state, select_queries
 
 
 def test_query_rotation_wraps_fairly():
@@ -35,3 +36,40 @@ def test_migration_scrubs_seller_identity_fields():
     assert "seller" not in row
     assert "seller_feedback_percentage" not in row
     assert "seller_feedback_score" not in row
+
+
+def test_run_snapshot_keeps_hit_details_but_scrubs_seller_identity():
+    state = default_state()
+    stats = RunStats(
+        started_at="2026-08-28T08:00:00Z",
+        completed_at="2026-08-28T08:01:00Z",
+        queries_used=12,
+        listings_seen=40,
+        fresh_listings=30,
+        detailed_candidates=18,
+        psa_lookups=4,
+        hits=1,
+        near_hits=0,
+        ebay_calls=30,
+    )
+    append_run(
+        state,
+        stats,
+        100,
+        results=[
+            {
+                "item_id": "v1|123|0",
+                "title": "PSA 10 Card",
+                "score": 14,
+                "seller": "seller-name",
+                "seller_feedback_percentage": 99.9,
+                "seller_feedback_score": 500,
+            }
+        ],
+    )
+    result = state["runs"][0]["results"][0]
+    assert result["item_id"] == "v1|123|0"
+    assert result["score"] == 14
+    assert "seller" not in result
+    assert "seller_feedback_percentage" not in result
+    assert "seller_feedback_score" not in result
