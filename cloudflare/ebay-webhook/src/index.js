@@ -6,7 +6,6 @@ const TOKEN_RE = /^[A-Za-z0-9_-]{32,80}$/;
 const EBAY_SCOPE = "https://api.ebay.com/oauth/api_scope";
 const TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token";
 const PUBLIC_KEY_URL = "https://api.ebay.com/commerce/notification/v1/public_key/";
-const GITHUB_DISPATCH_URL = "https://api.github.com/repos/ThorfinnThor/psa-sniper-free/actions/workflows/sniper.yml/dispatches";
 
 function json(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -38,35 +37,6 @@ export function validateDeletionPayload(payload) {
   if (!payload.notification.notificationId.trim()) return false;
   if (!payload?.notification?.data || typeof payload.notification.data !== "object") return false;
   return true;
-}
-
-export function githubDispatchRequest(token) {
-  if (!token) throw new Error("GITHUB_WORKFLOW_TOKEN is missing");
-  return {
-    url: GITHUB_DISPATCH_URL,
-    init: {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${token}`,
-        accept: "application/vnd.github+json",
-        "content-type": "application/json",
-        "user-agent": "psa-sniper-cloudflare-scheduler/1.0",
-        "x-github-api-version": "2022-11-28",
-      },
-      body: JSON.stringify({
-        ref: "main",
-        inputs: { source: "cloudflare" },
-      }),
-    },
-  };
-}
-
-export async function dispatchScanner(env) {
-  const { url, init } = githubDispatchRequest(env.GITHUB_WORKFLOW_TOKEN);
-  const response = await fetch(url, init);
-  if (response.status !== 204) {
-    throw new Error(`GitHub workflow dispatch failed with ${response.status}`);
-  }
 }
 
 function validateChallengeEnvironment(env) {
@@ -255,13 +225,5 @@ export default {
     } catch {
       return json({ error: "webhook_not_configured" }, 503);
     }
-  },
-
-  scheduled(controller, env, ctx) {
-    const task = dispatchScanner(env).catch((error) => {
-      // Never print the GitHub token. Status/error text is sufficient for diagnostics.
-      console.warn(`PSA Sniper schedule dispatch error (${controller?.cron || "unknown cron"}): ${error?.message || "unknown error"}`);
-    });
-    ctx.waitUntil(task);
   },
 };
