@@ -2,6 +2,7 @@ name: PSA Sniper Scheduler
 
 on:
   schedule:
+    # Minimaler GitHub-nativer Heartbeat; der Scanner-Core begrenzt echte Scans auf ~3 Stunden.
     - cron: "*/5 * * * *"
   workflow_dispatch:
   push:
