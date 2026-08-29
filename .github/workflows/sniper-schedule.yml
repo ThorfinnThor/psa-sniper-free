@@ -26,6 +26,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          in_progress="$(gh api "/repos/$REPO/actions/workflows/sniper.yml/runs?status=in_progress&per_page=1" --jq '.total_count // 0')"
+          queued="$(gh api "/repos/$REPO/actions/workflows/sniper.yml/runs?status=queued&per_page=1" --jq '.total_count // 0')"
+          if (( in_progress > 0 || queued > 0 )); then
+            echo "Scanner läuft bereits oder ist queued; kein doppelter Dispatch."
+            exit 0
+          fi
+
           gh api \
             --method POST \
             -H "Accept: application/vnd.github+json" \
