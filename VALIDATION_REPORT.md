@@ -25,6 +25,7 @@ Beide Punkte werden durch Diagnose, Workflow-Fehlertexte und Troubleshooting ein
 - zweistufige globale Preispriorisierung statt Comp-Budget nach Discovery-Reihenfolge,
 - rundenbasierte Comp-Fairness: eine Primärsuche pro geeignetem Kandidaten vor Fallbacks,
 - gemeinsame eBay-Abfrage für identische Cert-/Listing-Queries bei getrennter Evidenzprüfung,
+- identische robuste Stichprobe für Listing-Preisanker, Verkäuferzahl und Streuung,
 - Versandkosten in den Gesamtkosten,
 - reine Auktionen standardmäßig ausgeschlossen,
 - keine Discount-Punkte für laufende Auktionen,
@@ -44,7 +45,7 @@ Beide Punkte werden durch Diagnose, Workflow-Fehlertexte und Troubleshooting ein
 
 | Prüfung | Ergebnis |
 |---|---|
-| Python Unit Tests | 113 bestanden |
+| Python Unit Tests | 114 bestanden |
 | Ruff Produktionscode | bestanden |
 | Python `compileall` | bestanden |
 | JavaScript Syntaxcheck | bestanden |

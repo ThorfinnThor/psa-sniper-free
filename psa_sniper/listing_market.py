@@ -10,7 +10,7 @@ from .identity import (
     pricing_identity_fingerprint,
     pricing_identity_from_listing,
 )
-from .market import conservative_active_anchor
+from .market import clean_active_comp_values, conservative_active_anchor
 from .models import Listing, MarketValue, Money
 from .util import normalize_text
 
@@ -95,7 +95,7 @@ def market_value_from_listing_comps(
     anchor = conservative_active_anchor(values)
     if not anchor:
         return None
-    clean_values = [m for m in values if m.currency.upper() == anchor.currency.upper() and m.value > 0]
+    clean_values = clean_active_comp_values(values)
     sellers = {m.seller_key for m in clean_values if m.seller_key}
     numbers = sorted(m.value for m in clean_values)
     med = numbers[len(numbers) // 2] if numbers else 0.0

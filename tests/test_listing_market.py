@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from psa_sniper.listing_market import (
     build_listing_comp_queries,
@@ -24,7 +24,7 @@ def listing(item_id, title, price=100, aspects=None, seller=None):
         title=title,
         url=f"https://example.test/{item_id}",
         price=Money(price, "EUR"),
-        created_at=datetime(2026, 8, 28, tzinfo=timezone.utc),
+        created_at=datetime(2026, 8, 28, tzinfo=UTC),
         buying_options=["FIXED_PRICE"],
         aspects=aspects or {},
         seller=seller,
@@ -225,3 +225,33 @@ def test_sparse_listing_comps_stay_low_if_same_seller_or_wide_spread():
         identity, target_currency="EUR", fx=IdentityFX(),
     )
     assert market_value_from_listing_comps(wide).confidence == "niedrig"
+
+
+def test_listing_market_quality_uses_same_outlier_cleaning_as_price_anchor():
+    source = listing("own", "Pikachu #173 SV2A PSA 10 Japanese")
+    identity = listing_comp_identity(source)
+    assert identity is not None
+    rows = [
+        listing(
+            f"comp-{index}",
+            "Pikachu #173 SV2A PSA 10 Japanese",
+            price,
+            seller=f"seller-{index}",
+        )
+        for index, price in enumerate((100, 105, 110, 115, 120, 1_000), start=1)
+    ]
+    values = exact_active_comps_for_listing(
+        rows,
+        identity,
+        target_currency="EUR",
+        fx=IdentityFX(),
+    )
+
+    market = market_value_from_listing_comps(values)
+
+    assert market is not None
+    assert market.confidence == "mittel"
+    assert market.sample_size == 5
+    assert market.unique_sellers == 5
+    assert market.price_high == 120
+    assert market.dispersion is not None and market.dispersion < 0.20

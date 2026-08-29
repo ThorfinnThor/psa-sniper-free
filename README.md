@@ -220,6 +220,8 @@ Das ist nur die harte theoretische Obergrenze. Die Quota-Logik reserviert standa
 
 Vergleichspreise werden nicht mehr in Discovery-Reihenfolge gesucht. Zuerst lädt der Scanner alle Detailkandidaten, bestimmt Identität, Cert und vorhandene Caches und rankt anschließend global. Danach verteilt er die Comp-Suchen in Runden: Jeder geeignete Kandidat erhält zunächst eine Primärsuche; erst anschließend werden Fallback-Abfragen und zweite Ergebnisseiten ausgeführt. Identische Cert- und Listing-Abfragen werden nur einmal an eBay gesendet, ihre Ergebnisse aber weiterhin mit beiden unabhängigen Identitätsfiltern ausgewertet. So bleibt die Qualitätspriorisierung erhalten, ohne dass einzelne Kandidaten oder doppelte Netzaufrufe das knappe Budget vorzeitig aufbrauchen.
 
+Bei mindestens fünf exakten aktiven Comps entfernt eine konservative IQR-Prüfung extreme Preisausreißer. Preisanker, Stichprobengröße, Verkäuferzahl und Streuung werden anschließend aus derselben bereinigten Stichprobe berechnet. Ein einzelnes offensichtlich extremes Angebot kann die Qualitätsstufe daher nicht mehr künstlich herabsetzen; kleine oder tatsächlich uneinheitliche Märkte bleiben weiterhin schwach.
+
 Erhöhe die Werte nicht blind. Der Diagnosemodus warnt bei einer Konfiguration, die das kostenlose Budget zu stark ausreizt.
 
 ---

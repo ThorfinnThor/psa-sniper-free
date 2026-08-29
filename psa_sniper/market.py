@@ -232,7 +232,8 @@ def _quartile(sorted_values: list[float], fraction: float) -> float:
     return sorted_values[low] * (1 - weight) + sorted_values[high] * weight
 
 
-def _clean_values(values: list[Money]) -> list[Money]:
+def clean_active_comp_values(values: list[Money]) -> list[Money]:
+    """Return the robust sample used for both active-market price and quality."""
     if not values:
         return []
     currency = values[0].currency.upper()
@@ -251,7 +252,7 @@ def _clean_values(values: list[Money]) -> list[Money]:
 
 
 def conservative_active_anchor(values: list[Money]) -> Money | None:
-    cleaned = _clean_values(values)
+    cleaned = clean_active_comp_values(values)
     if not cleaned:
         return None
     if len(cleaned) >= 5:
@@ -263,7 +264,7 @@ def conservative_active_anchor(values: list[Money]) -> Money | None:
 
 
 def _quality(values: list[Money]) -> tuple[int, float | None, float | None, float | None, int]:
-    cleaned = _clean_values(values)
+    cleaned = clean_active_comp_values(values)
     if not cleaned:
         return 0, None, None, None, 0
     numbers = [m.value for m in cleaned]
@@ -284,7 +285,7 @@ def market_value_from_active_comps(
     anchor = conservative_active_anchor(values)
     if not anchor:
         return None
-    cleaned = _clean_values(values)
+    cleaned = clean_active_comp_values(values)
     sample_size = len(cleaned)
     unique_sellers, price_low, price_high, dispersion, match_penalty = _quality(cleaned)
     independent = unique_sellers >= 3

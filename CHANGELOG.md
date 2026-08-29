@@ -20,4 +20,5 @@
 - globale zweistufige Priorisierung des knappen Preisvergleichs-Budgets
 - faire rundenbasierte Comp-Verteilung mit einer Primärsuche pro Kandidat vor Fallbacks
 - Deduplizierung identischer Cert-/Listing-Comp-Abfragen bei doppelter Identitätsauswertung
+- konsistente IQR-Ausreißerbereinigung für Listing-Preisanker und Marktqualität
 - Ruff-Prüfung für den Produktionscode in CI und Live-Workflow
