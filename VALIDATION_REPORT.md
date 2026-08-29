@@ -26,6 +26,10 @@ Beide Punkte werden durch Diagnose, Workflow-Fehlertexte und Troubleshooting ein
 - rundenbasierte Comp-Fairness: eine Primärsuche pro geeignetem Kandidaten vor Fallbacks,
 - gemeinsame eBay-Abfrage für identische Cert-/Listing-Queries bei getrennter Evidenzprüfung,
 - identische robuste Stichprobe für Listing-Preisanker, Verkäuferzahl und Streuung,
+- gezielte Voll-Detail-Anreicherung für unvollständige eBay-Comp-Summaries,
+- getrennte Quota-Pools für Comp-Suchen und Comp-Details,
+- konkrete Preisquellen-Diagnose direkt auf jeder Dashboard-Karte,
+- PSA-Token-Normalisierung für rohe Tokens, Bearer-Werte und Authorization-Header,
 - Versandkosten in den Gesamtkosten,
 - reine Auktionen standardmäßig ausgeschlossen,
 - keine Discount-Punkte für laufende Auktionen,
@@ -45,7 +49,7 @@ Beide Punkte werden durch Diagnose, Workflow-Fehlertexte und Troubleshooting ein
 
 | Prüfung | Ergebnis |
 |---|---|
-| Python Unit Tests | 114 bestanden |
+| Python Unit Tests | 117 bestanden |
 | Ruff Produktionscode | bestanden |
 | Python `compileall` | bestanden |
 | JavaScript Syntaxcheck | bestanden |
@@ -57,6 +61,8 @@ Beide Punkte werden durch Diagnose, Workflow-Fehlertexte und Troubleshooting ein
 | Statisches Dashboard in Chromium gerendert | bestanden |
 | Startfilter ohne Kauf-Hits zeigt Beobachtungen | bestanden |
 | Dashboard ohne horizontales Overflow bei 1280, 1024 und 390 px | bestanden |
+| Fehlende Comp-Sprache durch vollständige eBay-Details sicher ergänzt | bestanden |
+| Explizit widersprüchliche Comp-Identitäten nicht angereichert | bestanden |
 | Suche filtert Demo-Hits | bestanden |
 | lokale Statusaktion | bestanden |
 | verschlüsselter Git-State persistieren/wiederherstellen | bestanden |

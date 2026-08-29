@@ -133,6 +133,9 @@ def test_dashboard_build_contains_dynamic_market_quality_and_repricing_ui(tmp_pa
     assert "function selectDefaultView()" in app
     assert "rows.some(row => row.is_hit)" in app
     assert "setResultView('watch')" in app
+    assert "function weakPriceExplanation(row)" in app
+    assert "Identität nur aus Listingdaten bestätigt" in app
+    assert "eBayCompDetails" in app
     assert 'id="showAvailable"' in index
     assert 'class="chip active" data-view="all"' in index
     assert 'class="chip active" data-view="hits"' not in index

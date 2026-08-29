@@ -13,6 +13,7 @@ from .identity import pricing_identity_from_dict
 from .listing_market import (
     build_listing_comp_queries,
     exact_active_comps_for_listing,
+    listing_comp_detail_candidates,
     listing_comp_fingerprint,
     listing_comp_identity,
     market_value_from_listing_comps,
@@ -57,6 +58,8 @@ class RepriceResult:
     expired: int = 0
     live_errors: int = 0
     budget_stops: int = 0
+    comp_detail_calls: int = 0
+    comp_detail_errors: int = 0
     secondary: list[ScoredHit] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
@@ -290,7 +293,8 @@ def _search_listing_comps(
     comp_limit: int,
     start_calls: int,
     max_comp_calls: int,
-) -> tuple[list[Listing], list[Money]]:
+    detail_limit: int = 0,
+) -> tuple[list[Listing], list[Money], int, int]:
     comp_rows: list[Listing] = []
     values: list[Money] = []
     for query in build_listing_comp_queries(identity):
@@ -305,7 +309,45 @@ def _search_listing_comps(
             values = exact_active_comps_for_listing(comp_rows, identity, target_currency=target_currency, fx=fx, exclude_item_id=listing.item_id)
         if len(values) >= 3:
             break
-    return comp_rows, values
+
+    detail_calls = 0
+    detail_errors = 0
+    market = market_value_from_listing_comps(values)
+    if detail_limit > 0 and (market is None or market.confidence.casefold() == "niedrig"):
+        attempted: set[str] = set()
+        candidates = listing_comp_detail_candidates(
+            comp_rows,
+            identity,
+            exclude_item_id=listing.item_id,
+            attempted_item_ids=attempted,
+        )
+        for summary in candidates[:detail_limit]:
+            if not _budget_left(ebay, start_calls, max_comp_calls):
+                break
+            attempted.add(summary.item_id)
+            try:
+                detail = ebay.get_item(summary.item_id)
+            except EbayBudgetExceeded:
+                break
+            except EbayError:
+                detail_calls += 1
+                detail_errors += 1
+                continue
+            detail_calls += 1
+            merged = merge_live_listing(summary, detail)
+            comp_rows = [
+                merged if row.item_id == summary.item_id else row
+                for row in comp_rows
+            ]
+        if detail_calls:
+            values = exact_active_comps_for_listing(
+                comp_rows,
+                identity,
+                target_currency=target_currency,
+                fx=fx,
+                exclude_item_id=listing.item_id,
+            )
+    return comp_rows, values, detail_calls, detail_errors
 
 
 def _maybe_secondary_candidate(
@@ -376,6 +418,11 @@ def reprice_state(
     priority_terms = list(settings.get("priority_terms") or [])
     demand_terms = list(settings.get("demand_terms") or [])
     start_calls = int(getattr(ebay, "calls_made", 0))
+    max_detail_calls = max(0, int(settings.get("max_reprice_comp_detail_calls_per_run", 0)))
+    max_details_per_candidate = max(
+        0,
+        int(settings.get("max_reprice_comp_details_per_candidate", 3)),
+    )
     history = list(state.get("history", []))
 
     for index, old in _due_history_rows(state, settings):
@@ -479,9 +526,21 @@ def reprice_state(
                     market = _prefer_market(market, cached_market)
                 if force_refresh or not cached or cached_market is None or cached_market.confidence.casefold() == "niedrig":
                     try:
-                        _, values = _search_listing_comps(
-                            ebay, identity, listing, target.currency, fx, comp_limit, start_calls, max_comp_calls
+                        remaining_detail_calls = max(0, max_detail_calls - result.comp_detail_calls)
+                        detail_limit = min(max_details_per_candidate, remaining_detail_calls)
+                        _, values, detail_calls, detail_errors = _search_listing_comps(
+                            ebay,
+                            identity,
+                            listing,
+                            target.currency,
+                            fx,
+                            comp_limit,
+                            start_calls,
+                            max_comp_calls,
+                            detail_limit,
                         )
+                        result.comp_detail_calls += detail_calls
+                        result.comp_detail_errors += detail_errors
                         listing_market = market_value_from_listing_comps(values, required_edge=max(0.25, comp_required_edge))
                         market = _prefer_market(market, listing_market)
                         if listing_market is not None:
@@ -545,6 +604,7 @@ def _append_summary(result: RepriceResult, hit_count: int) -> None:
             f"{result.checked} geprüft, {result.improved} Preisquelle(n) verbessert, "
             f"{result.live_rechecks} live geprüft, {result.expired} beendet, "
             f"{result.live_errors} Live-Fehler, {len(result.secondary)} sekundär entdeckt, "
+            f"{result.comp_detail_calls} Comp-Details, {result.comp_detail_errors} Detailfehler, "
             f"{hit_count} Kauf-Hit(s), "
             f"{result.calls} zusätzliche eBay-Calls.\n"
         )
@@ -610,6 +670,8 @@ def run_repricing_queue() -> int:
         latest["repricing_expired"] = result.expired
         latest["repricing_live_errors"] = result.live_errors
         latest["repricing_budget_stops"] = result.budget_stops
+        latest["repricing_comp_detail_calls"] = result.comp_detail_calls
+        latest["repricing_comp_detail_errors"] = result.comp_detail_errors
         latest["secondary_candidates"] = len(result.secondary)
         latest["total_ebay_calls"] = previous_calls + result.calls
         notes = list(latest.get("notes") or [])
@@ -618,6 +680,7 @@ def run_repricing_queue() -> int:
             "Repricing: "
             f"geprüft={result.checked}; verbessert={result.improved}; live={result.live_rechecks}; "
             f"beendet={result.expired}; LiveFehler={result.live_errors}; "
+            f"CompDetails={result.comp_detail_calls}; Detailfehler={result.comp_detail_errors}; "
             f"sekundär={len(result.secondary)}; Hits={len(repriced_hits)}; "
             f"eBayCalls={result.calls}"
         )
@@ -633,6 +696,7 @@ def run_repricing_queue() -> int:
         "Repricing abgeschlossen: "
         f"{result.checked} geprüft, {result.improved} verbessert, {result.live_rechecks} live geprüft, "
         f"{result.expired} beendet, {result.live_errors} Live-Fehler, "
+        f"{result.comp_detail_calls} Comp-Details, {result.comp_detail_errors} Detailfehler, "
         f"{len(result.secondary)} sekundär entdeckt, {len(repriced_hits)} Hits, "
         f"{result.calls} eBay-Calls."
     )

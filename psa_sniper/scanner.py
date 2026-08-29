@@ -14,6 +14,7 @@ from .listing_market import (
     ListingCompIdentity,
     build_listing_comp_queries,
     exact_active_comps_for_listing,
+    listing_comp_detail_candidates,
     listing_comp_fingerprint,
     listing_comp_identity,
     market_value_from_listing_comps,
@@ -288,6 +289,8 @@ class _PriceCandidate:
     search_tasks: list[_CompSearchTask] = field(default_factory=list)
     cert_comp_rows: list[Listing] = field(default_factory=list)
     listing_comp_rows: list[Listing] = field(default_factory=list)
+    comp_detail_attempts: set[str] = field(default_factory=set)
+    comp_detail_errors: int = 0
     merged_searches: int = 0
 
     @property
@@ -449,6 +452,81 @@ def _run_comp_search_task(
         )
 
 
+def _comp_detail_priority(candidate: _PriceCandidate) -> tuple[int, float, int, int]:
+    """Prioritize weak markets with the largest plausible purchase edge."""
+    market = candidate.market
+    target = candidate.listing.total_cost or candidate.listing.price
+    potential_edge = -1.0
+    if market is not None and target is not None and market.money.value > 0:
+        potential_edge = 1.0 - target.value / market.money.value
+    return (
+        int(bool(market and market.confidence.casefold() == "niedrig")),
+        potential_edge,
+        candidate.screening_score,
+        candidate.preliminary,
+    )
+
+
+def _enrich_listing_comp_details(
+    candidate: _PriceCandidate,
+    *,
+    ebay: EbayClient,
+    fx: FXRates,
+    state: dict[str, Any],
+    required_edge: float,
+    limit: int,
+) -> tuple[int, bool]:
+    """Load a few full comp records and recompute listing-market evidence."""
+    identity = candidate.listing_identity
+    target = candidate.listing.total_cost or candidate.listing.price
+    if identity is None or target is None or limit <= 0:
+        return 0, False
+
+    selected = listing_comp_detail_candidates(
+        candidate.listing_comp_rows,
+        identity,
+        exclude_item_id=candidate.listing.item_id,
+        attempted_item_ids=candidate.comp_detail_attempts,
+    )[:limit]
+    calls = 0
+    exhausted = False
+    for summary in selected:
+        candidate.comp_detail_attempts.add(summary.item_id)
+        try:
+            detail = ebay.get_item(summary.item_id)
+        except EbayBudgetExceeded:
+            exhausted = True
+            break
+        except EbayError:
+            calls += 1
+            candidate.comp_detail_errors += 1
+            continue
+        calls += 1
+        merged = _merge_listing(summary, detail)
+        candidate.listing_comp_rows = [
+            merged if row.item_id == summary.item_id else row
+            for row in candidate.listing_comp_rows
+        ]
+
+    if calls:
+        values = exact_active_comps_for_listing(
+            candidate.listing_comp_rows,
+            identity,
+            target_currency=target.currency,
+            fx=fx,
+            exclude_item_id=candidate.listing.item_id,
+        )
+        candidate.exact_matches = max(candidate.exact_matches, len(values))
+        listing_market = market_value_from_listing_comps(
+            values,
+            required_edge=max(0.25, required_edge),
+        )
+        candidate.market = _prefer_market_value(candidate.market, listing_market)
+        if listing_market is not None and candidate.listing_market_fingerprint:
+            put_cached_market(state, candidate.listing_market_fingerprint, listing_market)
+    return calls, exhausted
+
+
 def run_scan() -> int:
     started = utc_now()
     settings = load_settings()
@@ -538,6 +616,8 @@ def run_scan() -> int:
     except (EbayError, EbayBudgetExceeded) as exc:
         notes.append(_public_note(exc))
         notes.append(f"PSA API live: {_psa_status_label(psa_api_status)}")
+        if psa_api_status == "abgelehnt":
+            notes.append("PSA API Hinweis: Token wurde nach Normalisierung abgelehnt; im PSA-Konto neu erzeugen")
         completed = utc_now()
         stats = RunStats(
             iso_z(started), iso_z(completed), len(selected_queries), raw_seen,
@@ -570,10 +650,14 @@ def run_scan() -> int:
     cert_cache_days = int(settings.get("cert_cache_days", 7))
     market_cache_hours = int(settings.get("market_cache_hours", 8))
     max_comp_calls = int(settings.get("max_market_comp_calls_per_run", 0))
+    max_comp_detail_calls = int(settings.get("max_market_comp_detail_calls_per_run", 0))
+    max_comp_details_per_candidate = int(settings.get("max_market_comp_details_per_candidate", 3))
+    comp_detail_min_score = int(settings.get("market_comp_detail_min_screening_score", 6))
     comp_search_limit = int(settings.get("market_comp_search_limit", 100))
     comp_required_edge = float(settings.get("market_active_required_edge", 0.20))
     listing_market_min_prelim = int(settings.get("market_listing_fallback_min_preliminary_score", 7))
     market_comp_calls = 0
+    market_comp_detail_calls = 0
     max_psa_market_web_calls = int(settings.get("max_psa_market_web_calls_per_run", 0))
     psa_market_web_calls = 0
     psa_market_web_min_prelim = int(settings.get("psa_market_web_min_preliminary_score", 8))
@@ -781,6 +865,45 @@ def run_scan() -> int:
             if _market_needs_upgrade(candidate.market) and candidate.search_tasks:
                 candidate.budget_blocked = True
 
+    # Search summaries are deliberately cheap but often omit seller, language,
+    # set, and variant. Spend a separate bounded detail budget only on the most
+    # promising weak markets, ranked by plausible edge and screening score.
+    detail_budget_exhausted = False
+    for candidate in sorted(price_candidates, key=_comp_detail_priority, reverse=True):
+        if market_comp_detail_calls >= max_comp_detail_calls:
+            break
+        if candidate.screening_score < comp_detail_min_score:
+            continue
+        if not _market_needs_upgrade(candidate.market) or not candidate.listing_comp_rows:
+            continue
+        remaining = max_comp_detail_calls - market_comp_detail_calls
+        detail_limit = min(max_comp_details_per_candidate, remaining)
+        used, exhausted = _enrich_listing_comp_details(
+            candidate,
+            ebay=ebay,
+            fx=fx,
+            state=state,
+            required_edge=comp_required_edge,
+            limit=detail_limit,
+        )
+        market_comp_detail_calls += used
+        if not _market_needs_upgrade(candidate.market):
+            candidate.search_tasks.clear()
+            candidate.budget_blocked = False
+        if exhausted:
+            detail_budget_exhausted = True
+            break
+
+    if market_comp_detail_calls or max_comp_detail_calls:
+        detail_errors = sum(candidate.comp_detail_errors for candidate in price_candidates)
+        notes.append(
+            "Comp-Detailanreicherung: "
+            f"{market_comp_detail_calls} vollständige Listing-Details; "
+            f"{detail_errors} Detailfehler"
+        )
+    if detail_budget_exhausted:
+        notes.append("eBay-Budget bei der Comp-Detailanreicherung ausgeschöpft")
+
     budget_open = sum(1 for candidate in price_candidates if candidate.budget_blocked)
     notes.append(
         "Comp-Fairness: "
@@ -897,6 +1020,8 @@ def run_scan() -> int:
     verified_edges = sum(1 for row in scored if row.price_status == "verified_edge")
     candidate_api_successes = max(0, psa.api_successes - psa_api_success_baseline)
     notes.append(f"PSA API live: {_psa_status_label(psa_api_status)}")
+    if psa_api_status == "abgelehnt":
+        notes.append("PSA API Hinweis: Token wurde nach Normalisierung abgelehnt; im PSA-Konto neu erzeugen")
     if psa_cache_upgrades:
         notes.append(f"PSA API Cache-Upgrades: {psa_cache_upgrades}")
     notes.append(_price_diag_note(price_diag))
@@ -904,7 +1029,8 @@ def run_scan() -> int:
         "Coverage: "
         f"Details={len(scored)}; Cert={cert_detected}; PSA={candidate_api_successes}; "
         f"Verifiziert={cert_verified}; POP={pop_available}; Preis={price_indicators}; "
-        f"eBayCompSuche={market_comp_calls}; eBayCompPreis={ebay_comp_prices}; Edge={verified_edges}"
+        f"eBayCompSuche={market_comp_calls}; eBayCompDetails={market_comp_detail_calls}; "
+        f"eBayCompPreis={ebay_comp_prices}; Edge={verified_edges}"
     )
 
     completed = utc_now()

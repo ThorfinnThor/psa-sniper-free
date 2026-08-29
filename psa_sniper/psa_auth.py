@@ -13,5 +13,6 @@ def normalize_psa_access_token(value: str | None) -> str | None:
     if not value:
         return None
     token = value.strip().strip('"\'').strip()
+    token = re.sub(r"^authorization\s*:\s*", "", token, flags=re.IGNORECASE).strip()
     token = re.sub(r"^bearer\s+", "", token, flags=re.IGNORECASE).strip()
     return token or None

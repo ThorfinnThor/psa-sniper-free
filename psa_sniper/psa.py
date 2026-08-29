@@ -11,6 +11,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from .models import Money, PSACertInfo
+from .psa_auth import normalize_psa_access_token
 from .util import normalize_text, parse_int
 
 PSA_API_URL = "https://api.psacard.com/publicapi/cert/GetByCertNumber/{cert}"
@@ -74,7 +75,10 @@ class PSAClient:
         delay_seconds: float = 0.8,
         max_calls: int = 8,
     ) -> None:
-        self.access_token = access_token.strip() if access_token else None
+        # Normalize here as the final boundary as well as in CLI callers. This
+        # also protects direct/library use from secrets copied as a complete
+        # ``Authorization: bearer ...`` header.
+        self.access_token = normalize_psa_access_token(access_token)
         self.web_fallback = web_fallback
         self.delay_seconds = max(0.0, delay_seconds)
         self.max_calls = max_calls

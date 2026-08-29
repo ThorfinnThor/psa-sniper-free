@@ -291,6 +291,34 @@ function renderHealth() {
   pill.style.color = ageHours <= 1.5 ? 'var(--good)' : 'var(--warn)';
 }
 
+function weakPriceExplanation(row) {
+  const market = row.market_value;
+  if (!market) {
+    return 'Es wurde noch kein belastbarer Vergleichspreis gefunden. Die Repricing-Queue prüft das Angebot erneut.';
+  }
+  const source = market.source || 'schwacher Preisindikator';
+  if (market.market_type === 'psa_estimate') {
+    return `Preisquelle: ${source}. Es liegt nur ein PSA-Schätzwert statt mehrerer bestätigter Verkäufe vor.`;
+  }
+
+  const facts = [];
+  const samples = Number(market.sample_size);
+  const sellers = Number(market.unique_sellers);
+  const dispersion = Number(market.dispersion);
+  if (Number.isFinite(samples)) {
+    facts.push(samples === 1 ? '1 exakter Comp' : `${samples} exakte Comps`);
+  }
+  if (Number.isFinite(sellers)) {
+    facts.push(sellers === 1 ? '1 unabhängiger Verkäufer' : `${sellers} unabhängige Verkäufer`);
+  }
+  if (Number.isFinite(dispersion)) facts.push(`Streuung ${percent(dispersion)}`);
+  if (market.market_type === 'ebay_active_provisional') {
+    facts.push('Identität nur aus Listingdaten bestätigt');
+  }
+  const evidence = facts.length ? ` ${facts.join(' · ')}.` : '';
+  return `Preisquelle: ${source}.${evidence} Für ein Kaufurteil ist diese Beleglage noch zu schwach; vollständige Comp-Details und spätere Repricing-Läufe prüfen sie weiter.`;
+}
+
 function decisionInfo(row) {
   const status = row.price_status || 'unverified';
   const discount = Number(row.discount_pct);
@@ -314,7 +342,7 @@ function decisionInfo(row) {
     return {
       tone: 'warn',
       title: 'Beobachtung: Preisquelle zu schwach',
-      text: 'Der Score kann durch Low POP und Listing-Lücken hoch sein, aber der Preis basiert nur auf einem schwachen Indikator wie PSA Estimate.',
+      text: weakPriceExplanation(row),
     };
   }
   if (status === 'no_edge') {

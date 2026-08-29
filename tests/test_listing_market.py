@@ -4,6 +4,7 @@ from psa_sniper.listing_market import (
     build_listing_comp_queries,
     build_listing_comp_query,
     exact_active_comps_for_listing,
+    listing_comp_detail_candidates,
     listing_comp_identity,
     listing_comp_identity_score,
     market_value_from_listing_comps,
@@ -153,6 +154,38 @@ def test_missing_explicit_language_is_allowed_but_penalized_to_low_market_confid
     score, accepted = listing_comp_identity_score(no_language, identity)
     assert accepted is True
     assert score >= 6
+
+
+def test_detail_candidates_target_missing_dimensions_but_reject_explicit_conflicts():
+    source = listing("own", "Pikachu #173 SV2A PSA 10 Japanese")
+    identity = listing_comp_identity(source)
+    assert identity is not None
+    missing_language = listing(
+        "missing",
+        "Pikachu #173 SV2A PSA 10",
+        seller="seller-a",
+    )
+    missing_seller = listing(
+        "seller-missing",
+        "Pikachu #173 SV2A PSA 10 Japanese",
+    )
+    complete = listing(
+        "complete",
+        "Pikachu #173 SV2A PSA 10 Japanese",
+        seller="seller-c",
+    )
+    conflicting = listing(
+        "wrong",
+        "Pikachu #173 SV2A PSA 10 English",
+        seller="seller-d",
+    )
+
+    selected = listing_comp_detail_candidates(
+        [complete, conflicting, missing_seller, missing_language],
+        identity,
+    )
+
+    assert {row.item_id for row in selected} == {"missing", "seller-missing"}
 
 
 

@@ -202,8 +202,9 @@ function renderCoverage() {
     ['PSA Backfill', run?.psa_backfill_upgraded ?? 0, `${run?.psa_backfill_checked ?? 0} alte Cert(s) API-seitig geprüft`],
     ['Preisindikator', values.Preis ?? '–', 'PSA Sales · eBay Comps · Estimate'],
     ['eBay Comp-Suchen', values.eBayCompSuche ?? '–', `${values.eBayCompPreis ?? 0} brauchbare Comp-Preis(e)`],
+    ['Comp-Details', values.eBayCompDetails ?? 0, 'vollständige Daten für schwache Top-Comps nachgeladen'],
     ['Preisvorteil bestätigt', values.Edge ?? '–', 'je Preisquelle erforderliches Gate erfüllt'],
-    ['Repricing', run?.repricing_checked ?? 0, `${run?.repricing_improved ?? 0} Quelle(n) verbessert`],
+    ['Repricing', run?.repricing_checked ?? 0, `${run?.repricing_improved ?? 0} Quelle(n) verbessert · ${run?.repricing_comp_detail_calls ?? 0} Comp-Details`],
     ['Live-Rechecks', run?.repricing_live_rechecks ?? 0, `${run?.repricing_expired ?? 0} beendet · ${run?.repricing_live_errors ?? 0} temporäre Fehler`],
     ['Sekundär entdeckt', run?.secondary_candidates ?? 0, 'ältere Fehlpreise aus Leave-One-Out-Comps'],
     ['Calls gesamt', run?.total_ebay_calls ?? run?.ebay_calls ?? '–', `davon ${run?.repricing_calls ?? 0} Repricing`],
@@ -291,14 +292,8 @@ def _apply_dashboard_ui_defaults(output_dir: Path) -> None:
         (
             "  const discount = Number(row.discount_pct);",
             "  const discount = Number(row.discount_pct);\n"
-            "  const requiredEdge = Number(row.market_value?.required_edge ?? 0.10);\n"
-            "  const priceSource = row.market_value?.source || 'schwacher Preisindikator';",
+            "  const requiredEdge = Number(row.market_value?.required_edge ?? 0.10);",
             "dynamische Preis-Gate-Schwelle",
-        ),
-        (
-            "      text: 'Der Score kann durch Low POP und Listing-Lücken hoch sein, aber der Preis basiert nur auf einem schwachen Indikator wie PSA Estimate.',",
-            "      text: `Preisquelle: ${priceSource}. Diese Quelle ist nicht stark genug für ein Kaufurteil und wird durch die Repricing-Queue weiter geprüft.`,",
-            "schwache Preisquelle",
         ),
         (
             "        ? `${distanceLabel(discount)} zum Vergleichswert. Für einen Kauf-Hit verlangen wir mindestens 10 % bestätigten Preisvorteil.`\n"

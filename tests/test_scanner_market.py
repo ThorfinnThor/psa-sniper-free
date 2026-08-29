@@ -5,6 +5,7 @@ from psa_sniper.models import Listing, MarketValue, Money, PSACertInfo
 from psa_sniper.scanner import (
     _classify_price_gap,
     _CompSearchTask,
+    _enrich_listing_comp_details,
     _market_needs_upgrade,
     _prefer_market_value,
     _prepare_comp_search_tasks,
@@ -277,3 +278,88 @@ def test_shared_comp_query_feeds_both_identity_filters_with_one_call():
     assert candidate.market is not None
     assert candidate.market.market_type == "ebay_active"
     assert candidate.market.confidence == "mittel"
+
+
+def test_full_comp_details_can_upgrade_missing_language_evidence():
+    identity = PricingIdentity(
+        card_number="173",
+        subjects=("pikachu",),
+        terms=("pikachu", "sv2a"),
+        set_code="SV2A",
+        language="JP",
+    )
+    candidate = price_candidate(
+        "detail-upgrade",
+        screening_score=10,
+        listing_identity=identity,
+    )
+    candidate.listing_market_fingerprint = "listing:detail-upgrade|EUR"
+    summaries = [
+        Listing(
+            item_id=f"comp-{index}",
+            title="Pikachu #173 SV2A PSA 10",
+            url=f"https://example.test/comp-{index}",
+            price=Money(price, "EUR"),
+            created_at=datetime(2026, 8, 29, tzinfo=UTC),
+            buying_options=["FIXED_PRICE"],
+            seller=f"seller-{index}",
+        )
+        for index, price in enumerate((130, 135, 140), start=1)
+    ]
+    details = {
+        row.item_id: Listing(
+            item_id=row.item_id,
+            title=f"{row.title} Japanese",
+            url=row.url,
+            price=row.price,
+            created_at=row.created_at,
+            buying_options=row.buying_options,
+            seller=row.seller,
+            aspects={"Language": ["Japanese"], "Set": ["SV2A"]},
+        )
+        for row in summaries
+    }
+
+    class Ebay:
+        calls_made = 0
+
+        def search(self, *_args, **_kwargs):
+            self.calls_made += 1
+            return summaries
+
+        def get_item(self, item_id):
+            self.calls_made += 1
+            return details[item_id]
+
+    class FX:
+        def convert(self, money, currency):
+            return money if money.currency == currency else None
+
+    ebay = Ebay()
+    state = default_state()
+    _run_comp_search_task(
+        candidate,
+        _CompSearchTask("listing", "Pikachu SV2A 173 PSA 10"),
+        ebay=ebay,
+        fx=FX(),
+        state=state,
+        search_limit=100,
+        required_edge=0.20,
+    )
+    assert candidate.market is not None
+    assert candidate.market.confidence == "niedrig"
+
+    calls, exhausted = _enrich_listing_comp_details(
+        candidate,
+        ebay=ebay,
+        fx=FX(),
+        state=state,
+        required_edge=0.20,
+        limit=3,
+    )
+
+    assert calls == 3
+    assert exhausted is False
+    assert candidate.market is not None
+    assert candidate.market.confidence == "mittel"
+    assert candidate.market.unique_sellers == 3

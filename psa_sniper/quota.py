@@ -38,25 +38,30 @@ def allocate_call_budgets(allowed: int, settings: dict) -> dict[str, int]:
     search = min(max(0, int(settings.get("max_search_calls_per_run", 24))), allowed)
     remaining = max(0, allowed - search)
 
-    # Bei vollem 575er-Budget ergeben die Caps weiterhin 80 Markt- + 60
-    # Repricing-Calls. Unter Quotendruck werden Wartungspfade proportional
-    # reduziert, damit Discovery-Details nicht komplett verhungern.
+    # The three market-maintenance pools stay inside the same hard run cap.
+    # Full-detail comp reads are separate from cheap search pages so a weak
+    # market cannot silently consume the discovery-detail reserve.
     market = min(
-        max(0, int(settings.get("max_market_comp_calls_per_run", 80))),
-        max(0, round(remaining * 0.18)),
+        max(0, int(settings.get("max_market_comp_calls_per_run", 140))),
+        max(0, round(remaining * 0.25)),
+    )
+    market_detail = min(
+        max(0, int(settings.get("max_market_comp_detail_calls_per_run", 48))),
+        max(0, round(remaining * 0.09)),
     )
     reprice = min(
-        max(0, int(settings.get("max_reprice_comp_calls_per_run", 60))),
-        max(0, round(remaining * 0.12)),
+        max(0, int(settings.get("max_reprice_comp_calls_per_run", 100))),
+        max(0, round(remaining * 0.18)),
     )
     detail = min(
         max(0, int(settings.get("max_detail_calls_per_run", 470))),
-        max(0, remaining - market - reprice),
+        max(0, remaining - market - market_detail - reprice),
     )
     return {
         "search": search,
         "detail": detail,
         "market": market,
+        "market_detail": market_detail,
         "reprice": reprice,
     }
 
@@ -127,6 +132,7 @@ def prepare_scan_quota() -> QuotaDecision:
             "max_search_calls_per_run": budgets["search"],
             "max_detail_calls_per_run": budgets["detail"],
             "max_market_comp_calls_per_run": budgets["market"],
+            "max_market_comp_detail_calls_per_run": budgets["market_detail"],
             "max_reprice_comp_calls_per_run": budgets["reprice"],
         }
     )

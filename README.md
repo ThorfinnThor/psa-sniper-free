@@ -94,7 +94,7 @@ Verwende **keine Sandbox-Keys** für echte Listings. Teile die Keys und das Dash
 |---|---|
 | `SEARCH_CONFIG_JSON` | hält deine echten Suchbegriffe trotz öffentlichem Repo geheim |
 | `SETTINGS_OVERRIDE_JSON` | überschreibt einzelne Scanner-Einstellungen ohne Commit |
-| `PSA_ACCESS_TOKEN` | bevorzugt die offizielle PSA Public API vor dem Web-Fallback |
+| `PSA_ACCESS_TOKEN` | bevorzugt die offizielle PSA Public API vor dem Web-Fallback; reiner Token oder kopierter `Authorization: Bearer …`-Wert |
 | `TELEGRAM_BOT_TOKEN` | Telegram-Alerts |
 | `TELEGRAM_CHAT_ID` | Zielchat für Telegram-Alerts |
 | `DISCORD_WEBHOOK_URL` | Discord-Alerts |
@@ -205,9 +205,10 @@ Das Secret überschreibt nur die angegebenen Werte aus `config/settings.json`.
 Die Standardkonfiguration verwendet maximal:
 
 - 24 Discovery-Suchaufrufe pro Deep-Scan,
-- bis zu 470 Detailaufrufe,
-- bis zu 80 priorisierte Preisvergleichssuchen,
-- bis zu 60 Repricing-Aufrufe,
+- bis zu 470 Discovery-Detailaufrufe (durch die Quota-Verteilung im Volllauf derzeit 266),
+- ungefähr 140 priorisierte Preisvergleichssuchen,
+- bis zu 48 gezielte Voll-Details für schwache Top-Comps,
+- ungefähr 100 Repricing-Aufrufe einschließlich bis zu 24 Comp-Details,
 - insgesamt höchstens 575 eBay-Aufrufe pro Deep-Scan.
 
 Der Scheduler prüft alle fünf Minuten, ob Arbeit fällig ist. Ein echter Deep-Scan wird standardmäßig aber nur ungefähr alle drei Stunden ausgeführt. Vor jedem Lauf reduziert die Quota-Logik die Teilbudgets anhand der rollierenden 24-Stunden-Nutzung und – falls verfügbar – der eBay-Analytics.
@@ -221,6 +222,10 @@ Theoretisches Maximum:
 Das ist nur die harte theoretische Obergrenze. Die Quota-Logik reserviert standardmäßig 350 Calls und reduziert spätere Läufe, sobald die rollierende Nutzung zu hoch wird. OAuth-Aufrufe und externe PSA-/ECB-Aufrufe sind separate Dienste.
 
 Vergleichspreise werden nicht mehr in Discovery-Reihenfolge gesucht. Zuerst lädt der Scanner alle Detailkandidaten, bestimmt Identität, Cert und vorhandene Caches und rankt anschließend global. Danach verteilt er die Comp-Suchen in Runden: Jeder geeignete Kandidat erhält zunächst eine Primärsuche; erst anschließend werden Fallback-Abfragen und zweite Ergebnisseiten ausgeführt. Identische Cert- und Listing-Abfragen werden nur einmal an eBay gesendet, ihre Ergebnisse aber weiterhin mit beiden unabhängigen Identitätsfiltern ausgewertet. So bleibt die Qualitätspriorisierung erhalten, ohne dass einzelne Kandidaten oder doppelte Netzaufrufe das knappe Budget vorzeitig aufbrauchen.
+
+Wenn ein rechnerisch interessanter Markt nur deshalb schwach bleibt, weil eBays Suchzusammenfassungen Sprache, Set, Variante oder Verkäufer nicht vollständig enthalten, lädt der Scanner für die bestpriorisierten Fälle bis zu drei vollständige Comp-Datensätze nach. Explizit widersprüchliche Karten werden dabei nicht angereichert. Suchseiten, Comp-Details, Discovery-Details und Repricing besitzen getrennte Quota-Pools und bleiben gemeinsam unter der harten Laufgrenze.
+
+Das Dashboard zeigt bei schwachen Preisquellen nicht mehr nur einen Sammelhinweis, sondern nennt pro Karte Stichprobengröße, unabhängige Verkäufer, Preisstreuung und den Status der Listing-Identität.
 
 Bei mindestens fünf exakten aktiven Comps entfernt eine konservative IQR-Prüfung extreme Preisausreißer. Preisanker, Stichprobengröße, Verkäuferzahl und Streuung werden anschließend aus derselben bereinigten Stichprobe berechnet. Ein einzelnes offensichtlich extremes Angebot kann die Qualitätsstufe daher nicht mehr künstlich herabsetzen; kleine oder tatsächlich uneinheitliche Märkte bleiben weiterhin schwach.
 

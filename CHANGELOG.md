@@ -23,4 +23,8 @@
 - konsistente IQR-Ausreißerbereinigung für Listing-Preisanker und Marktqualität
 - dynamischer Dashboard-Startfilter und hilfreicher Leerzustand statt leerer Kauf-Hit-Ansicht
 - robuste Dashboard-Breiten ohne horizontales Abschneiden bei Desktop, Tablet und Mobilgerät
+- automatische PSA-Token-Normalisierung einschließlich kopierter Authorization-Header
+- getrennt quota-gesteuerte Voll-Details für schwache, preislich interessante eBay-Comps
+- erhöhtes und weiterhin hart gedeckeltes Comp-/Repricing-Budget
+- kartenspezifische Preisqualitäts-Erklärung mit Comp-, Verkäufer- und Streuungswerten
 - Ruff-Prüfung für den Produktionscode in CI und Live-Workflow

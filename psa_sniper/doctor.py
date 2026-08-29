@@ -9,6 +9,7 @@ from datetime import timedelta
 from .config import load_queries, load_settings
 from .ebay import EbayClient, EbayError
 from .ocr import ocr_enabled
+from .psa_auth import normalize_psa_access_token
 from .util import utc_now
 
 
@@ -83,8 +84,15 @@ def run_doctor(live: bool = False) -> tuple[list[Check], bool]:
     else:
         checks.append(Check("INFO", "OCR", "deaktiviert; Scanner funktioniert mit Cert in Titel/Item-Specifics"))
 
-    if os.getenv("PSA_ACCESS_TOKEN"):
-        checks.append(Check("OK", "PSA API", "optionaler Access Token vorhanden"))
+    raw_psa_token = os.getenv("PSA_ACCESS_TOKEN")
+    normalized_psa_token = normalize_psa_access_token(raw_psa_token)
+    if normalized_psa_token:
+        normalized_note = (
+            "; kopiertes Authorization-/Bearer-Präfix wird automatisch entfernt"
+            if raw_psa_token and raw_psa_token.strip() != normalized_psa_token
+            else ""
+        )
+        checks.append(Check("OK", "PSA API", f"optionaler Access Token vorhanden{normalized_note}"))
     elif bool(settings.get("enable_psa_web_fallback", True)):
         checks.append(Check("INFO", "PSA API", "kein Token; öffentliche Cert-Seite als Best-Effort-Fallback"))
     else:

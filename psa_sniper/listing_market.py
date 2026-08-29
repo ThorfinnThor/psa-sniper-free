@@ -87,6 +87,65 @@ def exact_active_comps_for_listing(
     return matches
 
 
+def listing_comp_detail_candidates(
+    rows: list[Listing],
+    identity: ListingCompIdentity,
+    *,
+    exclude_item_id: str | None = None,
+    attempted_item_ids: set[str] | None = None,
+) -> list[Listing]:
+    """Rank summaries whose full eBay details can improve comp confidence.
+
+    Browse search summaries often omit language, set/variant aspects, or seller
+    data. Exact-looking rows with those gaps are accepted conservatively but
+    receive a match penalty, which keeps the market confidence low. A small,
+    prioritized number of full item reads can fill those dimensions. Rows with
+    an explicit conflicting identity are never enriched merely because their
+    search query happened to match.
+    """
+    attempted = attempted_item_ids or set()
+    subject_tokens = {normalize_text(value) for value in identity.subjects if value}
+    ranked: list[tuple[int, int, int, float, Listing]] = []
+    seen: set[str] = set()
+
+    for row in rows:
+        if (
+            not row.item_id
+            or row.item_id == exclude_item_id
+            or row.item_id in attempted
+            or row.item_id in seen
+        ):
+            continue
+        seen.add(row.item_id)
+        score, accepted, penalty = identity_match(row, identity)
+        total = row.total_cost or row.price
+        price = float(total.value) if total else float("inf")
+
+        if accepted:
+            missing_seller = int(not row.seller)
+            if penalty <= 0 and not missing_seller:
+                continue
+            ranked.append((3, int(penalty), missing_seller, -price, row))
+            continue
+
+        # A missing card number/aspect in the summary can make identity parsing
+        # impossible. Only consider such a row when the visible title still has
+        # PSA 10 and the expected subject; explicit conflicts were parsed above
+        # and are deliberately rejected.
+        if pricing_identity_from_listing(row) is not None:
+            continue
+        title = normalize_text(row.title)
+        title_tokens = set(title.split())
+        if not any(marker in title for marker in ("psa 10", "psa10", "gem mt 10", "gem mint 10")):
+            continue
+        if subject_tokens and not (subject_tokens & title_tokens):
+            continue
+        ranked.append((1, 0, int(not row.seller), -price, row))
+
+    ranked.sort(key=lambda item: item[:4], reverse=True)
+    return [item[-1] for item in ranked]
+
+
 def market_value_from_listing_comps(
     values: list[Money],
     *,

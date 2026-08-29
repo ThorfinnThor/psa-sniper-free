@@ -95,6 +95,26 @@ def test_validate_access_token_marks_success_without_exposing_token(monkeypatch)
     assert client.access_token == "secret-test-token"
 
 
+def test_psa_client_normalizes_complete_authorization_header(monkeypatch):
+    client = PSAClient(
+        access_token="Authorization: Bearer secret-test-token",
+        web_fallback=False,
+        delay_seconds=0,
+        max_calls=2,
+    )
+    response = _response(200, b'{"IsValidRequest":true,"CertNumber":"67205095","Grade":"10"}')
+    seen_header = None
+
+    def get(*args, **kwargs):
+        nonlocal seen_header
+        seen_header = kwargs["headers"]["Authorization"]
+        return response
+
+    monkeypatch.setattr(client.session, "get", get)
+    assert client.validate_access_token() == "ok"
+    assert seen_header == "bearer secret-test-token"
+
+
 def test_validate_access_token_marks_rejected_and_disables_bad_token(monkeypatch):
     client = PSAClient(access_token="bad-token", web_fallback=True, delay_seconds=0, max_calls=2)
     monkeypatch.setattr(client.session, "get", lambda *args, **kwargs: _response(401))
