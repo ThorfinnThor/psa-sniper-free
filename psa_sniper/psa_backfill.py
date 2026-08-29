@@ -116,6 +116,8 @@ def backfill_state(
                 market_value_listing_currency=market,
                 priority_terms=list(settings.get("priority_terms") or []),
                 demand_terms=list(settings.get("demand_terms") or []),
+                import_risk_extra_edge=float(settings.get("import_risk_extra_edge", 0.0)),
+                import_exempt_countries=list(settings.get("import_risk_exempt_countries") or []),
             )
             updated = _preserve_history_meta(row, hit_to_record(hit, threshold))
             row.clear()

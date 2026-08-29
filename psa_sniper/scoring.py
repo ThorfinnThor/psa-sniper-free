@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from .identity import pricing_identity_from_listing
@@ -225,6 +226,8 @@ def score_hit(
     market_value_listing_currency: MarketValue | Money | None = None,
     priority_terms: list[str] | None = None,
     demand_terms: list[str] | None = None,
+    import_risk_extra_edge: float = 0.0,
+    import_exempt_countries: list[str] | None = None,
 ) -> ScoredHit:
     score = 0
     reasons: list[str] = []
@@ -312,9 +315,9 @@ def score_hit(
         value
         for value in (
             listing.title,
-            cert.subject if cert else None,
-            cert.brand_title if cert else None,
-            cert.variety if cert else None,
+            cert.subject if cert and cert_trusted else None,
+            cert.brand_title if cert and cert_trusted else None,
+            cert.variety if cert and cert_trusted else None,
         )
         if value
     )
@@ -367,13 +370,30 @@ def score_hit(
     market_raw = market_value_listing_currency
     if isinstance(market_raw, Money):
         market_raw = MarketValue(market_raw, "manueller/Legacy-Preisindikator", "hoch", 1)
-    market = market_raw if cert_trusted else None
+    market = market_raw
+    if not cert_trusted and market and market.market_type != "ebay_active_provisional":
+        # Listing-basierte eBay-Comps sind unabhängig von einer falschen Cert und
+        # dürfen als konservative Beobachtungs-Preisquelle erhalten bleiben.
+        market = None
     acquisition = listing.total_cost
 
     if not listing.pure_auction and market and acquisition and market.money.value > 0:
         discount_pct = 1.0 - acquisition.value / market.money.value
         confidence = market.confidence.casefold()
         required_edge = max(MIN_VERIFIED_PRICE_EDGE, float(market.required_edge or 0.10))
+
+        country = str(listing.item_location_country or "").upper().strip()
+        exempt = {str(value).upper().strip() for value in (import_exempt_countries or []) if str(value).strip()}
+        extra_import_edge = max(0.0, float(import_risk_extra_edge or 0.0))
+        if country and exempt and country not in exempt and extra_import_edge > 0:
+            required_edge = min(0.95, required_edge + extra_import_edge)
+            market = replace(market, required_edge=required_edge)
+            label = (
+                f"Nicht-EU-/Import-Risiko ({country}): zusätzlich "
+                f"{extra_import_edge:.0%} Sicherheitsabstand erforderlich"
+            )
+            adjust(0, label)
+            warnings.append(label)
 
         if confidence in {"hoch", "mittel"} and discount_pct >= required_edge:
             price_status = "verified_edge"

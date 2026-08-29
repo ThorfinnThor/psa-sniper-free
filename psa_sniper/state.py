@@ -198,12 +198,65 @@ def mark_processed(state: dict[str, Any], item_id: str, score: int) -> None:
     state.setdefault("processed", {})[item_id] = {"at": iso_z(utc_now()), "score": score}
 
 
-def mark_alerted(state: dict[str, Any], item_id: str, channels: dict[str, bool]) -> None:
-    state.setdefault("alerted", {})[item_id] = {"at": iso_z(utc_now()), "channels": channels}
+def mark_alerted(
+    state: dict[str, Any],
+    item_id: str,
+    channels: dict[str, bool],
+    *,
+    hit: ScoredHit | None = None,
+) -> None:
+    row: dict[str, Any] = {"at": iso_z(utc_now()), "channels": channels}
+    if hit is not None:
+        total = hit.listing.total_cost or hit.listing.price
+        if total is not None:
+            row["total_cost"] = total.to_dict()
+        if hit.discount_pct is not None:
+            row["discount_pct"] = float(hit.discount_pct)
+        row["score"] = int(hit.score)
+    state.setdefault("alerted", {})[item_id] = row
 
 
 def is_alerted(state: dict[str, Any], item_id: str) -> bool:
     return item_id in dict(state.get("alerted", {}))
+
+
+def should_alert(
+    state: dict[str, Any],
+    hit: ScoredHit,
+    *,
+    min_price_drop_pct: float = 0.10,
+    min_edge_improvement: float = 0.10,
+) -> bool:
+    previous = dict(state.get("alerted", {})).get(hit.listing.item_id)
+    if not isinstance(previous, dict):
+        return True
+
+    current_total = hit.listing.total_cost or hit.listing.price
+    old_total = previous.get("total_cost")
+    if current_total and isinstance(old_total, dict):
+        try:
+            old_value = float(old_total.get("value"))
+            old_currency = str(old_total.get("currency") or "").upper()
+            if (
+                old_value > 0
+                and old_currency == current_total.currency.upper()
+                and current_total.value <= old_value * (1.0 - max(0.0, min_price_drop_pct))
+            ):
+                return True
+        except (TypeError, ValueError):
+            pass
+
+    try:
+        old_edge = float(previous.get("discount_pct"))
+    except (TypeError, ValueError):
+        old_edge = None
+    if (
+        old_edge is not None
+        and hit.discount_pct is not None
+        and hit.discount_pct >= old_edge + max(0.0, min_edge_improvement)
+    ):
+        return True
+    return False
 
 
 def _money_dict(value: Any) -> dict[str, Any] | None:

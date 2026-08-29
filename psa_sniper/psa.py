@@ -55,13 +55,10 @@ def merge_cert_info(authoritative: PSACertInfo, existing: PSACertInfo | None) ->
 def cert_needs_api_upgrade(cert: PSACertInfo | None) -> bool:
     if cert is None:
         return True
-    source = str(cert.data_source or "")
-    if "PSA Public API" not in source:
-        return True
-    return any(
-        value is None or value == ""
-        for value in (cert.grade, cert.subject, cert.card_number, cert.population)
-    )
+    # Sobald der Datensatz aus der Public API stammt, übernimmt die normale
+    # dynamische Cert-Cache-TTL spätere Refreshes. Leere PSA-Felder sind nicht
+    # automatisch ein Grund, dieselbe Cert in jedem Lauf erneut abzufragen.
+    return "PSA Public API" not in str(cert.data_source or "")
 
 
 class PSABudgetExceeded(RuntimeError):

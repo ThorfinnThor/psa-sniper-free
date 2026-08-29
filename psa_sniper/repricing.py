@@ -33,13 +33,13 @@ from .state import (
     cert_from_dict,
     get_cached_market,
     hit_to_record,
-    is_alerted,
     load_state,
     mark_alerted,
     market_from_dict,
     prune_state,
     put_cached_market,
     save_state,
+    should_alert,
 )
 from .util import iso_z, parse_iso_datetime, utc_now
 
@@ -500,6 +500,8 @@ def reprice_state(
             market_value_listing_currency=market,
             priority_terms=priority_terms,
             demand_terms=demand_terms,
+            import_risk_extra_edge=float(settings.get("import_risk_extra_edge", 0.0)),
+            import_exempt_countries=list(settings.get("import_risk_exempt_countries") or []),
         )
         result.scored.append(hit)
         if _market_key(market) > _market_key(current_market):
@@ -586,11 +588,15 @@ def run_repricing_queue() -> int:
     repriced_near = [row for row in result.scored if dashboard_min <= row.score < threshold]
     channels = configured_channels()
     for hit in repriced_hits:
-        if is_alerted(state, hit.listing.item_id):
+        if not should_alert(
+            state, hit,
+            min_price_drop_pct=float(settings.get("alert_rearm_price_drop_pct", 0.10)),
+            min_edge_improvement=float(settings.get("alert_rearm_edge_improvement", 0.10)),
+        ):
             continue
         statuses = notify(hit)
         if not channels or any(statuses.values()):
-            mark_alerted(state, hit.listing.item_id, statuses or {"dashboard": True})
+            mark_alerted(state, hit.listing.item_id, statuses or {"dashboard": True}, hit=hit)
 
     if runs:
         latest = dict(state["runs"][0])

@@ -292,3 +292,65 @@ def test_localized_subject_is_trusted_by_matching_card_number():
     )
     assert trusted is True
     assert "kartennummer" in reason.casefold()
+
+
+def test_untrusted_cert_keeps_independent_listing_comp_indicator():
+    listing = Listing(
+        item_id="listing-comp-survives", title="2021 Bundesliga PSA 10 #99",
+        url="https://example.test/listing-comp", price=Money(70, "EUR"),
+        created_at=datetime.now(timezone.utc), buying_options=["FIXED_PRICE"],
+    )
+    cert = _cert()
+    market = MarketValue(
+        Money(100, "EUR"), "eBay Listing-Comps", "niedrig", 4,
+        market_type="ebay_active_provisional", required_edge=.25, unique_sellers=4,
+    )
+    hit = score_hit(
+        listing, cert_number=cert.cert_number, cert_source="Item-Specifics", cert=cert,
+        market_value_listing_currency=market, priority_terms=[], demand_terms=[],
+    )
+    assert hit.cert_trusted is False
+    assert hit.market_value is not None
+    assert hit.market_value.market_type == "ebay_active_provisional"
+    assert hit.price_status == "weak_indicator"
+
+
+def test_non_eu_listing_requires_extra_import_edge():
+    listing = Listing(
+        item_id="import", title="2021 Bundesliga PSA 10 #16",
+        url="https://example.test/import", price=Money(70, "EUR"),
+        created_at=datetime.now(timezone.utc), buying_options=["FIXED_PRICE"],
+        item_location_country="US",
+    )
+    market = MarketValue(
+        Money(100, "EUR"), "eBay", "mittel", 5,
+        market_type="ebay_active", required_edge=.20, unique_sellers=4,
+    )
+    hit = score_hit(
+        listing, cert_number="67205095", cert_source="Titel", cert=_cert(),
+        market_value_listing_currency=market, priority_terms=[], demand_terms=[],
+        import_risk_extra_edge=.15, import_exempt_countries=["DE", "FR"],
+    )
+    assert hit.market_value.required_edge == .35
+    assert hit.price_status == "no_edge"
+    assert any("import-risiko" in warning.casefold() for warning in hit.warnings)
+
+
+def test_eu_listing_keeps_base_price_gate():
+    listing = Listing(
+        item_id="eu", title="2021 Bundesliga PSA 10 #16",
+        url="https://example.test/eu", price=Money(75, "EUR"),
+        created_at=datetime.now(timezone.utc), buying_options=["FIXED_PRICE"],
+        item_location_country="DE",
+    )
+    market = MarketValue(
+        Money(100, "EUR"), "eBay", "mittel", 5,
+        market_type="ebay_active", required_edge=.20, unique_sellers=4,
+    )
+    hit = score_hit(
+        listing, cert_number="67205095", cert_source="Titel", cert=_cert(),
+        market_value_listing_currency=market, priority_terms=[], demand_terms=[],
+        import_risk_extra_edge=.15, import_exempt_countries=["DE", "FR"],
+    )
+    assert hit.market_value.required_edge == .20
+    assert hit.price_status == "verified_edge"

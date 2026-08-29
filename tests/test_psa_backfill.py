@@ -97,3 +97,11 @@ def test_backfill_upgrades_history_and_rescores_low_pop():
     assert row["cert"]["population"] == 9
     assert "PSA Public API" in row["cert"]["data_source"]
     assert row["cert_trusted"] is True
+
+
+def test_api_sourced_cert_with_missing_population_waits_for_normal_cache_ttl():
+    cert = PSACertInfo(
+        cert_number="2", valid=True, grade="10", subject="A", card_number="1",
+        population=None, data_source="PSA Public API",
+    )
+    assert cert_needs_api_upgrade(cert) is False

@@ -18,6 +18,14 @@
   "market_cache_hours": 8,
   "market_active_required_edge": 0.2,
   "market_listing_fallback_min_preliminary_score": 7,
+  "import_risk_extra_edge": 0.15,
+  "import_risk_exempt_countries": [
+    "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR",
+    "DE", "GR", "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL",
+    "PL", "PT", "RO", "SK", "SI", "ES", "SE"
+  ],
+  "alert_rearm_price_drop_pct": 0.10,
+  "alert_rearm_edge_improvement": 0.10,
   "enable_repricing_queue": true,
   "max_reprice_items_per_run": 60,
   "max_reprice_comp_calls_per_run": 60,

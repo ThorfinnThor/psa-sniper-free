@@ -44,7 +44,6 @@ from .state import (
     get_cached_cert,
     get_cached_market,
     hit_to_record,
-    is_alerted,
     load_state,
     mark_alerted,
     mark_processed,
@@ -54,6 +53,7 @@ from .state import (
     put_cached_market,
     save_state,
     select_queries,
+    should_alert,
     upsert_history,
 )
 from .util import iso_z, utc_now
@@ -441,10 +441,17 @@ def run_scan() -> int:
                 if cert:
                     put_cached_cert(state, cert)
 
-        market = _market_in_listing_currency(market_value_from_cert(cert), listing, fx)
+        cert_market_safe = bool(
+            cert and cert_candidate and _cert_safe_for_market(listing, cert_candidate, cert)
+        )
+        market = (
+            _market_in_listing_currency(market_value_from_cert(cert), listing, fx)
+            if cert_market_safe
+            else None
+        )
 
         if (
-            cert and cert.valid and market is None
+            cert and cert.valid and cert_market_safe and market is None
             and psa_market_web_calls < max_psa_market_web_calls
             and prelim >= psa_market_web_min_prelim
             and not psa.web_rate_limited
@@ -596,6 +603,8 @@ def run_scan() -> int:
             market_value_listing_currency=market,
             priority_terms=priority_terms,
             demand_terms=list(settings.get("demand_terms") or []),
+            import_risk_extra_edge=float(settings.get("import_risk_extra_edge", 0.0)),
+            import_exempt_countries=list(settings.get("import_risk_exempt_countries") or []),
         )
         gap_reason = _classify_price_gap(
             hit.market_value,
@@ -672,11 +681,15 @@ def run_scan() -> int:
 
     channels = configured_channels()
     for hit in hits:
-        if is_alerted(state, hit.listing.item_id):
+        if not should_alert(
+            state, hit,
+            min_price_drop_pct=float(settings.get("alert_rearm_price_drop_pct", 0.10)),
+            min_edge_improvement=float(settings.get("alert_rearm_edge_improvement", 0.10)),
+        ):
             continue
         statuses = notify(hit)
         if not channels or any(statuses.values()):
-            mark_alerted(state, hit.listing.item_id, statuses or {"dashboard": True})
+            mark_alerted(state, hit.listing.item_id, statuses or {"dashboard": True}, hit=hit)
         else:
             notes.append("Mindestens ein Alert konnte nicht zugestellt werden")
 

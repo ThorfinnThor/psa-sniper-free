@@ -80,6 +80,8 @@ def refresh_hit_for_purchase(
         market_value_listing_currency=hit.market_value,
         priority_terms=list(settings.get("priority_terms") or []),
         demand_terms=list(settings.get("demand_terms") or []),
+        import_risk_extra_edge=float(settings.get("import_risk_extra_edge", 0.0)),
+        import_exempt_countries=list(settings.get("import_risk_exempt_countries") or []),
     )
     threshold = int(settings.get("hit_threshold", 11))
     if refreshed.score < threshold or refreshed.price_status != "verified_edge":
