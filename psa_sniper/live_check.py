@@ -82,6 +82,7 @@ def refresh_hit_for_purchase(
         demand_terms=list(settings.get("demand_terms") or []),
         import_risk_extra_edge=float(settings.get("import_risk_extra_edge", 0.0)),
         import_exempt_countries=list(settings.get("import_risk_exempt_countries") or []),
+        unknown_shipping_extra_edge=float(settings.get("unknown_shipping_extra_edge", 0.0)),
     )
     threshold = int(settings.get("hit_threshold", 11))
     if refreshed.score < threshold or refreshed.price_status != "verified_edge":

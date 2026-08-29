@@ -354,3 +354,46 @@ def test_eu_listing_keeps_base_price_gate():
     )
     assert hit.market_value.required_edge == .20
     assert hit.price_status == "verified_edge"
+
+
+def test_unknown_shipping_requires_extra_edge():
+    listing = Listing(
+        item_id="shipping-unknown", title="2021 Bundesliga PSA 10 #16",
+        url="https://example.test/shipping-unknown", price=Money(75, "EUR"), shipping=None,
+        created_at=datetime.now(timezone.utc), buying_options=["FIXED_PRICE"],
+        item_location_country="DE",
+    )
+    market = MarketValue(
+        Money(100, "EUR"), "eBay", "mittel", 5,
+        market_type="ebay_active", required_edge=.20, unique_sellers=4,
+    )
+    hit = score_hit(
+        listing, cert_number="67205095", cert_source="Titel", cert=_cert(),
+        market_value_listing_currency=market, priority_terms=[], demand_terms=[],
+        import_risk_extra_edge=.15, import_exempt_countries=["DE"],
+        unknown_shipping_extra_edge=.10,
+    )
+    assert round(hit.market_value.required_edge, 6) == .30
+    assert hit.price_status == "no_edge"
+    assert any("versandkosten nicht sicher" in warning.casefold() for warning in hit.warnings)
+
+
+def test_explicit_free_shipping_has_no_unknown_shipping_penalty():
+    listing = Listing(
+        item_id="free-shipping", title="2021 Bundesliga PSA 10 #16",
+        url="https://example.test/free", price=Money(75, "EUR"), shipping=Money(0, "EUR"),
+        created_at=datetime.now(timezone.utc), buying_options=["FIXED_PRICE"],
+        item_location_country="DE",
+    )
+    market = MarketValue(
+        Money(100, "EUR"), "eBay", "mittel", 5,
+        market_type="ebay_active", required_edge=.20, unique_sellers=4,
+    )
+    hit = score_hit(
+        listing, cert_number="67205095", cert_source="Titel", cert=_cert(),
+        market_value_listing_currency=market, priority_terms=[], demand_terms=[],
+        import_risk_extra_edge=.15, import_exempt_countries=["DE"],
+        unknown_shipping_extra_edge=.10,
+    )
+    assert hit.market_value.required_edge == .20
+    assert hit.price_status == "verified_edge"

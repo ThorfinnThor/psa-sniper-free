@@ -13,3 +13,8 @@ def test_import_risk_defaults_are_conservative_for_german_buyer():
     assert settings["import_risk_extra_edge"] >= .10
     assert "DE" in settings["import_risk_exempt_countries"]
     assert "US" not in settings["import_risk_exempt_countries"]
+
+
+def test_unknown_shipping_has_nonzero_safety_margin():
+    settings = json.loads(Path("config/settings.json").read_text(encoding="utf-8"))
+    assert settings["unknown_shipping_extra_edge"] >= .05

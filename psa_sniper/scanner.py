@@ -605,6 +605,7 @@ def run_scan() -> int:
             demand_terms=list(settings.get("demand_terms") or []),
             import_risk_extra_edge=float(settings.get("import_risk_extra_edge", 0.0)),
             import_exempt_countries=list(settings.get("import_risk_exempt_countries") or []),
+            unknown_shipping_extra_edge=float(settings.get("unknown_shipping_extra_edge", 0.0)),
         )
         gap_reason = _classify_price_gap(
             hit.market_value,

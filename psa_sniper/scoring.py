@@ -228,6 +228,7 @@ def score_hit(
     demand_terms: list[str] | None = None,
     import_risk_extra_edge: float = 0.0,
     import_exempt_countries: list[str] | None = None,
+    unknown_shipping_extra_edge: float = 0.0,
 ) -> ScoredHit:
     score = 0
     reasons: list[str] = []
@@ -387,13 +388,25 @@ def score_hit(
         extra_import_edge = max(0.0, float(import_risk_extra_edge or 0.0))
         if country and exempt and country not in exempt and extra_import_edge > 0:
             required_edge = min(0.95, required_edge + extra_import_edge)
-            market = replace(market, required_edge=required_edge)
             label = (
                 f"Nicht-EU-/Import-Risiko ({country}): zusätzlich "
                 f"{extra_import_edge:.0%} Sicherheitsabstand erforderlich"
             )
             adjust(0, label)
             warnings.append(label)
+
+        shipping_extra = max(0.0, float(unknown_shipping_extra_edge or 0.0))
+        if listing.shipping is None and shipping_extra > 0:
+            required_edge = min(0.95, required_edge + shipping_extra)
+            label = (
+                "Versandkosten nicht sicher bestimmt: zusätzlich "
+                f"{shipping_extra:.0%} Sicherheitsabstand erforderlich"
+            )
+            adjust(0, label)
+            warnings.append(label)
+
+        if required_edge != float(market.required_edge or 0.10):
+            market = replace(market, required_edge=required_edge)
 
         if confidence in {"hoch", "mittel"} and discount_pct >= required_edge:
             price_status = "verified_edge"

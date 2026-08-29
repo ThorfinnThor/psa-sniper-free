@@ -133,7 +133,7 @@ def test_two_later_psa_5xx_open_circuit(monkeypatch):
     assert client.access_token is not None
     assert client.get_cert("79959649") is None
     assert client.access_token is None
-    assert client.api_disabled_reason == "server_or_credentials"
+    assert client.api_disabled_reason == "service_unavailable"
 
 
 def test_recent_sales_stops_before_duplicate_mobile_sales_block():
@@ -162,3 +162,23 @@ def test_api_only_lookup_does_not_fall_back_to_web(monkeypatch):
     monkeypatch.setattr(client, "_get_web", lambda cert: called.__setitem__("web", called["web"] + 1))
     assert client.get_api_cert("12345678") is None
     assert called["web"] == 0
+
+
+def test_initial_psa_503_is_transient_and_keeps_token(monkeypatch):
+    client = PSAClient(access_token="fresh-token", web_fallback=False, delay_seconds=0, max_calls=3)
+    monkeypatch.setattr(client.session, "get", lambda *args, **kwargs: _response(503))
+    assert client.validate_access_token() == "servicefehler"
+    assert client.access_token == "fresh-token"
+    assert client.api_disabled_reason is None
+    assert client.calls_made == 1
+
+
+def test_second_psa_503_opens_transient_service_circuit(monkeypatch):
+    client = PSAClient(access_token="fresh-token", web_fallback=False, delay_seconds=0, max_calls=4)
+    monkeypatch.setattr(client.session, "get", lambda *args, **kwargs: _response(503))
+    assert client.validate_access_token() == "servicefehler"
+    assert client.access_token is not None
+    assert client.get_api_cert("79959648") is None
+    assert client.access_token is None
+    assert client.api_disabled_reason == "service_unavailable"
+    assert client.calls_made == 2

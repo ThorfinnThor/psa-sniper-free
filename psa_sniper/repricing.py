@@ -502,6 +502,7 @@ def reprice_state(
             demand_terms=demand_terms,
             import_risk_extra_edge=float(settings.get("import_risk_extra_edge", 0.0)),
             import_exempt_countries=list(settings.get("import_risk_exempt_countries") or []),
+            unknown_shipping_extra_edge=float(settings.get("unknown_shipping_extra_edge", 0.0)),
         )
         result.scored.append(hit)
         if _market_key(market) > _market_key(current_market):

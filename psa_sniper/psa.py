@@ -86,17 +86,10 @@ class PSAClient:
         self.api_failure_streak = 0
         self.api_disabled_reason: str | None = None
         self.session = requests.Session()
-        # PSA documents HTTP 500 as commonly meaning invalid credentials. Do not
-        # blindly retry 500; it is handled by the circuit breaker below.
-        retry = Retry(
-            total=2,
-            connect=2,
-            read=2,
-            backoff_factor=1.0,
-            status_forcelist=(502, 503, 504),
-            allowed_methods=frozenset({"GET"}),
-            respect_retry_after_header=True,
-        )
+        # Keine versteckten HTTP-Retries: PSA-Budget und Diagnose sollen
+        # tatsächliche Requests zählen. Circuit-Breaker-Entscheidungen passieren
+        # ausschließlich in _get_api().
+        retry = Retry(total=0, connect=0, read=0, redirect=0, status=0)
         self.session.mount("https://", HTTPAdapter(max_retries=retry))
         self.session.headers.update(
             {
@@ -200,11 +193,20 @@ class PSAClient:
         if response.status_code >= 500:
             self.api_auth_status = "servicefehler"
             self.api_failure_streak += 1
-            # PSA says 500 usually indicates invalid credentials. On the initial
-            # token validation, disable immediately; during a run, two consecutive
-            # 5xx responses open the circuit breaker.
-            if was_initial_validation or self.api_failure_streak >= 2:
-                self._disable_api("server_or_credentials")
+            # PSA dokumentiert speziell HTTP 500 als häufiges Credentials-Signal.
+            # 502/503/504 sind dagegen klassische transiente Gateway/Service-Fehler
+            # und dürfen einen frisch erzeugten Token nicht nach nur einem Fehler
+            # permanent für den Lauf deaktivieren.
+            if (
+                (was_initial_validation and response.status_code == 500)
+                or self.api_failure_streak >= 2
+            ):
+                reason = (
+                    "server_or_credentials"
+                    if response.status_code == 500
+                    else "service_unavailable"
+                )
+                self._disable_api(reason)
             return None
         if response.status_code >= 400:
             self.api_auth_status = "http_fehler"

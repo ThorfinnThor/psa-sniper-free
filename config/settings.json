@@ -19,6 +19,7 @@
   "market_active_required_edge": 0.2,
   "market_listing_fallback_min_preliminary_score": 7,
   "import_risk_extra_edge": 0.15,
+  "unknown_shipping_extra_edge": 0.10,
   "import_risk_exempt_countries": [
     "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR",
     "DE", "GR", "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL",
