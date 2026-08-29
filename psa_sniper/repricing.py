@@ -477,7 +477,7 @@ def reprice_state(
                 cached, cached_market = get_cached_market(state, fingerprint, int(settings.get("market_cache_hours", 8)))
                 if cached and cached_market is not None:
                     market = _prefer_market(market, cached_market)
-                else:
+                if force_refresh or not cached or cached_market is None or cached_market.confidence.casefold() == "niedrig":
                     try:
                         _, values = _search_listing_comps(
                             ebay, identity, listing, target.currency, fx, comp_limit, start_calls, max_comp_calls

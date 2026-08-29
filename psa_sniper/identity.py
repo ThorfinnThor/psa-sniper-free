@@ -19,7 +19,7 @@ _DESCRIPTOR = {
     "ultra", "refractor", "parallel", "reverse", "shiny", "rainbow", "shadowless",
 }
 _LANGUAGE_TOKENS = {
-    "JP": {"jp", "jpn", "japanese", "japanisch"},
+    "JP": {"jp", "jpn", "jap", "japanese", "japanisch"},
     "EN": {"en", "eng", "english", "englisch"},
     "DE": {"de", "ger", "german", "deutsch"},
     "KR": {"kr", "kor", "korean", "koreanisch"},
@@ -77,9 +77,17 @@ def _aspect_value(listing: Listing, wanted: tuple[str, ...]) -> str | None:
 def _normalize_card_number(value: str | None) -> str | None:
     if not value:
         return None
-    text = normalize_text(value).strip().lstrip("#")
-    match = re.search(r"[a-z0-9]+(?:[\-_/][a-z0-9]+)?", text)
-    return match.group(0) if match else None
+    # normalize_text() intentionally removes punctuation, but separators such as
+    # P-043 and 237/193 are part of a trading-card number. Preserve them here.
+    text = str(value).strip().casefold().lstrip("#")
+    text = re.sub(r"\s*([\-_/])\s*", r"\1", text)
+    match = re.search(r"[a-z0-9]+(?:[\-_/][a-z0-9]+){0,2}", text, re.I)
+    return match.group(0).casefold() if match else None
+
+
+def _card_number_key(value: str | None) -> str:
+    # P-043, P043 and P 043 are the same identifier for matching purposes.
+    return "".join(_tokens(value or ""))
 
 
 def _card_number_near_psa(title: str) -> str | None:
@@ -92,18 +100,35 @@ def _card_number_near_psa(title: str) -> str | None:
     )
     if not match:
         return None
-    value = normalize_text(match.group(1))
-    return None if re.fullmatch(r"(?:19|20)\d{2}", value) else value
+    value = _normalize_card_number(match.group(1))
+    return None if value and re.fullmatch(r"(?:19|20)\d{2}", value) else value
+
+
+def _card_number_anywhere(title: str) -> str | None:
+    # High-signal formats commonly occur well before the words "PSA 10".
+    # Examples from real listings: 237/193, P-043, OP01-001, P043.
+    patterns = (
+        r"(?<![a-z0-9])(\d{1,4}\s*/\s*\d{1,4})(?![a-z0-9])",
+        r"(?<![a-z0-9])([a-z]{1,4}\d{0,3}\s*[-_/]\s*\d{1,4}[a-z]?)(?![a-z0-9])",
+        r"(?<![a-z0-9])([a-z]{1,4}\d{2,5})(?![a-z0-9])",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, title, re.I)
+        if match:
+            value = _normalize_card_number(match.group(1))
+            if value:
+                return value
+    return None
 
 
 def card_number_from_title(title: str) -> str | None:
     near = _card_number_near_psa(title)
     explicit_match = re.search(
-        r"(?<![a-z0-9])#\s*([a-z0-9]+(?:[\-_/][a-z0-9]+)?)",
+        r"(?<![a-z0-9])#\s*([a-z0-9]+(?:[\-_/][a-z0-9]+){0,2})",
         title,
         re.I,
     )
-    explicit = normalize_text(explicit_match.group(1)) if explicit_match else None
+    explicit = _normalize_card_number(explicit_match.group(1)) if explicit_match else None
 
     # A pure numeric token immediately before PSA is usually the actual card
     # number and can override an earlier magazine/issue marker (#36-37 043 JP
@@ -116,6 +141,10 @@ def card_number_from_title(title: str) -> str | None:
     if near:
         return near
 
+    anywhere = _card_number_anywhere(title)
+    if anywhere:
+        return anywhere
+
     match = re.search(
         r"(?<![a-z0-9])([a-z]{0,3}\d{1,4}[a-z]?(?:[\-_/][a-z0-9]+)?)\s+psa\s*10\b",
         title,
@@ -123,8 +152,8 @@ def card_number_from_title(title: str) -> str | None:
     )
     if not match:
         return None
-    value = normalize_text(match.group(1))
-    return None if re.fullmatch(r"(?:19|20)\d{2}", value) else value
+    value = _normalize_card_number(match.group(1))
+    return None if value and re.fullmatch(r"(?:19|20)\d{2}", value) else value
 
 
 def normalize_language(value: str | None) -> str | None:
@@ -229,6 +258,18 @@ def pricing_identity_from_listing(
     subjects = _subject_terms(subject_value or "", exclude=card_parts)
     if not subjects:
         subjects = _subject_terms(listing.title, exclude=card_parts)
+        # Prefer nearby card-name terms only after removing obvious set/publication
+        # words. This keeps "Monkey D Luffy ... WSJ ... 043" as Monkey/Luffy,
+        # while "Team Rocket's Mewtwo ... 237/193" resolves to Mewtwo.
+        title_n = normalize_text(listing.title)
+        card_n = normalize_text(card_number)
+        position = title_n.find(card_n) if card_n else -1
+        if position > 0:
+            before_number = _subject_terms(title_n[:position], exclude=card_parts)
+            noise = {"team", "rocket", "dream", "weekly", "shonen", "jump", "wsj"}
+            nearby = [term for term in before_number if term not in noise]
+            if nearby:
+                subjects = nearby[-2:]
     if not subjects:
         return None
 
@@ -331,16 +372,33 @@ def pricing_identity_fingerprint(identity: PricingIdentity) -> str:
 
 def build_identity_queries(identity: PricingIdentity) -> list[str]:
     subject = " ".join(identity.subjects[:2])
+    number_variants = [identity.card_number]
+    compact = _card_number_key(identity.card_number)
+    raw_compact = identity.card_number.replace("-", "").replace("/", "").replace("_", "")
+    if compact and identity.card_number != raw_compact:
+        number_variants.append(compact)
+    parts = _tokens(identity.card_number)
+    if "/" in identity.card_number and len(parts) >= 2 and parts[0].isdigit():
+        number_variants.append(parts[0])
+    number_variants = list(dict.fromkeys(value for value in number_variants if value))
+
+    queries: list[str] = []
+    primary = number_variants[0]
     precise: list[str] = [subject]
     if identity.set_code:
         precise.append(identity.set_code)
-    precise.extend([identity.card_number, "PSA 10"])
-    queries = [" ".join(x for x in precise if x)]
+    precise.extend([primary, "PSA 10"])
+    queries.append(" ".join(x for x in precise if x))
     if identity.set_code:
-        queries.append(" ".join([subject, identity.card_number, "PSA 10"]))
+        queries.append(" ".join([subject, primary, "PSA 10"]))
     if len(identity.subjects) >= 2:
-        queries.append(" ".join([identity.subjects[0], identity.card_number, "PSA 10"]))
-    return list(dict.fromkeys(q.strip() for q in queries if q.strip()))
+        queries.append(" ".join([identity.subjects[0], primary, "PSA 10"]))
+
+    for alternate in number_variants[1:]:
+        if identity.set_code:
+            queries.append(" ".join([subject, identity.set_code, alternate, "PSA 10"]))
+        queries.append(" ".join([identity.subjects[0], alternate, "PSA 10"]))
+    return list(dict.fromkeys(q.strip() for q in queries if q.strip()))[:5]
 
 
 def identity_match(
@@ -348,7 +406,7 @@ def identity_match(
     identity: PricingIdentity,
 ) -> tuple[int, bool, int]:
     candidate = pricing_identity_from_listing(listing)
-    if candidate is None or normalize_text(candidate.card_number) != normalize_text(identity.card_number):
+    if candidate is None or _card_number_key(candidate.card_number) != _card_number_key(identity.card_number):
         return 0, False, 0
 
     penalty = 0

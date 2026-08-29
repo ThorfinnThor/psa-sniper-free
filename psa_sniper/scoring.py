@@ -455,8 +455,10 @@ def score_hit(
         else:
             adjust(0, f"Kein bestätigter Preisvorteil von mindestens {required_edge:.0%}")
 
-        if market.market_type == "ebay_active":
-            if market.sample_size >= 3:
+        if market.market_type in {"ebay_active", "ebay_active_provisional"}:
+            if confidence == "mittel" and market.market_type == "ebay_active_provisional":
+                adjust(0, f"eBay-Marktanker aus {market.sample_size} exakten unabhängigen Listing-Comps")
+            elif market.sample_size >= 3:
                 adjust(0, f"eBay-Marktanker aus {market.sample_size} exakten aktiven PSA-10-Comps")
             else:
                 adjust(0, f"nur {market.sample_size} exakte aktive eBay-Comp(s); Preisquelle zu dünn")

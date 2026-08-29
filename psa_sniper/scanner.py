@@ -480,7 +480,7 @@ def run_scan() -> int:
                     cached, cached_market = get_cached_market(state, fingerprint, market_cache_hours)
                     if cached and cached_market is not None:
                         market = _prefer_market_value(market, cached_market)
-                    elif market_comp_calls < max_comp_calls:
+                    if (not cached or cached_market is None or cached_market.confidence.casefold() == "niedrig") and market_comp_calls < max_comp_calls:
                         try:
                             comp_rows: list[Listing] = []
                             values = []
@@ -545,7 +545,7 @@ def run_scan() -> int:
                 cached, cached_market = get_cached_market(state, fingerprint, market_cache_hours)
                 if cached and cached_market is not None:
                     market = _prefer_market_value(market, cached_market)
-                else:
+                if not cached or cached_market is None or cached_market.confidence.casefold() == "niedrig":
                     try:
                         comp_rows: list[Listing] = []
                         values = []

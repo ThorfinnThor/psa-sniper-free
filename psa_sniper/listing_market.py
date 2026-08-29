@@ -100,10 +100,39 @@ def market_value_from_listing_comps(
     numbers = sorted(m.value for m in clean_values)
     med = numbers[len(numbers) // 2] if numbers else 0.0
     spread = ((numbers[-1] - numbers[0]) / med) if len(numbers) >= 2 and med > 0 else 0.0
+    max_penalty = max((int(m.match_penalty or 0) for m in clean_values), default=0)
+    min_identity = min((int(m.identity_score or 0) for m in clean_values), default=0)
+
+    sparse_exact = (
+        len(clean_values) == 2
+        and len(sellers) == 2
+        and spread <= 0.18
+        and max_penalty == 0
+        and min_identity >= 7
+    )
+    dense_exact = (
+        len(clean_values) >= 3
+        and len(sellers) >= 3
+        and spread <= 0.30
+        and max_penalty == 0
+        and min_identity >= 6
+    )
+    confidence = "mittel" if sparse_exact or dense_exact else "niedrig"
+
+    # With only two comps, use the cheaper ask rather than their median. The
+    # buyer therefore has to beat both independent exact listings by the gate.
+    if sparse_exact:
+        anchor = Money(float(numbers[0]), anchor.currency)
+
+    source = (
+        "eBay aktive PSA-10-Comps (exakte Listing-Identität)"
+        if confidence == "mittel"
+        else "eBay aktive PSA-10-Comps (Listing-Identität)"
+    )
     return MarketValue(
         anchor,
-        "eBay aktive PSA-10-Comps (Listing-Identität)",
-        "niedrig",
+        source,
+        confidence,
         len(clean_values),
         market_type="ebay_active_provisional",
         required_edge=max(0.25, required_edge),
