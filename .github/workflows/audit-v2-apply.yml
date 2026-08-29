@@ -1,11 +1,11 @@
-name: Apply Audit V2 Quality
+name: Apply Audit V2 Safety
 
 on:
   push:
     branches: ["audit-v2-20260829"]
     paths:
       - ".github/workflows/audit-v2-apply.yml"
-      - "scripts/apply_audit_v2_quality.py"
+      - "scripts/apply_audit_v2_safety.py"
 
 permissions:
   contents: write
@@ -24,11 +24,11 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements-dev.txt
-      - name: Qualitäts-Fixes anwenden und testen
+      - name: Sicherheits-Fixes anwenden und testen
         shell: bash
         run: |
           set -euo pipefail
-          python scripts/apply_audit_v2_quality.py
+          python scripts/apply_audit_v2_safety.py
           pytest -q
           python -m compileall -q psa_sniper
           node --check site/template/app.js
@@ -41,13 +41,14 @@ jobs:
             psa_sniper/psa.py \
             psa_sniper/scoring.py \
             psa_sniper/scanner.py \
+            psa_sniper/live_check.py \
+            psa_sniper/repricing.py \
             psa_sniper/psa_backfill.py \
-            psa_sniper/cli.py \
-            psa_sniper/dashboard.py \
+            psa_sniper/state.py \
             config/settings.json \
             tests/test_scoring.py \
+            tests/test_alert_rearm.py \
             tests/test_psa_backfill.py \
-            tests/test_psa.py \
             tests/test_quality_config.py
-          git commit -m "Harden cert trust and add PSA history backfill"
+          git commit -m "Add import-risk gates and alert rearming"
           git push origin HEAD:audit-v2-20260829
