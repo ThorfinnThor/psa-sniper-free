@@ -123,12 +123,19 @@ def _card_number_anywhere(title: str) -> str | None:
 
 def card_number_from_title(title: str) -> str | None:
     near = _card_number_near_psa(title)
+    anywhere = _card_number_anywhere(title)
     explicit_match = re.search(
         r"(?<![a-z0-9])#\s*([a-z0-9]+(?:[\-_/][a-z0-9]+){0,2})",
         title,
         re.I,
     )
     explicit = _normalize_card_number(explicit_match.group(1)) if explicit_match else None
+
+    # A complete collector number such as 039/100 is stronger evidence than a
+    # trailing seller inventory marker such as #c620. The latter is common in
+    # real eBay titles and previously displaced the actual card number.
+    if anywhere and "/" in anywhere:
+        return anywhere
 
     # A pure numeric token immediately before PSA is usually the actual card
     # number and can override an earlier magazine/issue marker (#36-37 043 JP
@@ -141,7 +148,6 @@ def card_number_from_title(title: str) -> str | None:
     if near:
         return near
 
-    anywhere = _card_number_anywhere(title)
     if anywhere:
         return anywhere
 
@@ -247,9 +253,16 @@ def pricing_identity_from_listing(
         return None
     card_number = _normalize_card_number(cert.card_number if cert else None)
     if not card_number:
-        card_number = _normalize_card_number(_aspect_value(listing, _CARD_NUMBER_KEYS))
-    if not card_number:
-        card_number = card_number_from_title(listing.title)
+        aspect_number = _normalize_card_number(_aspect_value(listing, _CARD_NUMBER_KEYS))
+        title_number = card_number_from_title(listing.title)
+        # Persisted/eBay aspects can contain a seller inventory code. A full
+        # numerator/denominator number in the title is the stronger identifier.
+        if title_number and "/" in title_number and (
+            not aspect_number or "/" not in aspect_number
+        ):
+            card_number = title_number
+        else:
+            card_number = aspect_number or title_number
     if not card_number:
         return None
 

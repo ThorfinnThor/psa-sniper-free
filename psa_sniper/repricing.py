@@ -9,7 +9,7 @@ from typing import Any
 from .config import ROOT, load_settings, state_path
 from .ebay import EbayBudgetExceeded, EbayClient, EbayError
 from .fx import FXRates
-from .identity import pricing_identity_from_dict
+from .identity import PricingIdentity, pricing_identity_from_dict, pricing_identity_from_listing
 from .listing_market import (
     build_listing_comp_queries,
     exact_active_comps_for_listing,
@@ -140,6 +140,24 @@ def listing_from_history(row: dict[str, Any]) -> Listing | None:
     )
 
 
+def _history_pricing_identity(row: dict[str, Any], listing: Listing) -> PricingIdentity | None:
+    """Prefer newly parsed high-signal collector numbers over stale state."""
+    stored = pricing_identity_from_dict(row.get("pricing_identity"))
+    title_only = Listing(
+        item_id=listing.item_id,
+        title=listing.title,
+        url=listing.url,
+        price=listing.price,
+        created_at=listing.created_at,
+    )
+    reparsed = pricing_identity_from_listing(title_only)
+    if reparsed and "/" in reparsed.card_number and (
+        stored is None or "/" not in stored.card_number
+    ):
+        return reparsed
+    return stored or listing_comp_identity(listing)
+
+
 def _cert_from_history(row: dict[str, Any]) -> PSACertInfo | None:
     data = row.get("cert")
     return cert_from_dict(data) if isinstance(data, dict) else None
@@ -261,6 +279,50 @@ def _due_history_rows(state: dict[str, Any], settings: dict[str, Any]) -> list[t
         candidates.append((index, row, priority))
     candidates.sort(key=lambda item: item[2], reverse=True)
     return [(index, row) for index, row, _ in candidates[:max_items]]
+
+
+def _point130_priority_rows(
+    state: dict[str, Any],
+    settings: dict[str, Any],
+    sales: list[Point130Sale],
+    fx: FXRates,
+) -> list[tuple[int, dict[str, Any]]]:
+    """Prioritize recent history rows improved by newly imported sold comps."""
+    if not sales:
+        return []
+    now = utc_now()
+    max_age = timedelta(hours=max(1, int(settings.get("reprice_max_history_age_hours", 72))))
+    candidates: list[tuple[int, dict[str, Any], float]] = []
+    for index, row in enumerate(list(state.get("history", []))):
+        if not isinstance(row, dict) or row.get("pure_auction"):
+            continue
+        if str(row.get("availability_status") or "active") in {"ended", "unavailable"}:
+            continue
+        last_seen = parse_iso_datetime(row.get("last_seen_at") or row.get("first_seen_at"))
+        if last_seen is None or now - last_seen > max_age:
+            continue
+        listing = listing_from_history(row)
+        if listing is None:
+            continue
+        target = listing.total_cost or listing.price
+        identity = _history_pricing_identity(row, listing)
+        if target is None or identity is None:
+            continue
+        candidate = point130_market_for_identity(
+            sales,
+            identity,
+            target_currency=target.currency,
+            fx=fx,
+            max_age_days=int(settings.get("point130_sold_max_age_days", 365)),
+            required_edge=float(settings.get("point130_sold_required_edge", 0.12)),
+        )
+        current = market_from_dict(row.get("market_value"))
+        if candidate is None or _market_key(candidate) <= _market_key(current):
+            continue
+        priority = float(row.get("score") or 0) * 1_000_000 + last_seen.timestamp()
+        candidates.append((index, row, priority))
+    candidates.sort(key=lambda item: item[2], reverse=True)
+    return [(index, row) for index, row, _ in candidates]
 
 
 def _budget_left(ebay: Any, start_calls: int, max_comp_calls: int) -> bool:
@@ -437,7 +499,21 @@ def reprice_state(
     history = list(state.get("history", []))
     imported_sales = point130_sales or []
 
-    for index, old in _due_history_rows(state, settings):
+    priority_rows = _point130_priority_rows(state, settings, imported_sales, fx)
+    normal_rows = _due_history_rows(state, settings)
+    max_items = max(0, int(settings.get("max_reprice_items_per_run", 60)))
+    queued_rows: list[tuple[int, dict[str, Any]]] = []
+    queued_indexes: set[int] = set()
+    if max_items > 0:
+        for candidate in [*priority_rows, *normal_rows]:
+            if candidate[0] in queued_indexes:
+                continue
+            queued_indexes.add(candidate[0])
+            queued_rows.append(candidate)
+            if len(queued_rows) >= max_items:
+                break
+
+    for index, old in queued_rows:
         if not _budget_left(ebay, start_calls, max_comp_calls):
             break
         stored = listing_from_history(old)
@@ -488,7 +564,7 @@ def reprice_state(
         force_refresh = str(old.get("price_status") or "") in REFRESHABLE_PRICE_STATUSES
         cert_comp_rows: list[Listing] = []
         cert_values: list[Money] = []
-        identity = pricing_identity_from_dict(old.get("pricing_identity")) or listing_comp_identity(listing)
+        identity = _history_pricing_identity(old, listing)
 
         if target and imported_sales and identity:
             point130_market = point130_market_for_identity(

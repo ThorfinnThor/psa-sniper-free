@@ -136,6 +136,18 @@ def test_luffy_prefers_card_number_near_psa_over_magazine_issue_number():
     assert build_listing_comp_query(identity) == "monkey luffy 043 PSA 10"
 
 
+def test_complete_card_number_beats_trailing_seller_inventory_tag():
+    row = listing(
+        "mew",
+        "Pokemon Japanese Mew V RR PSA 10 Gem Mint s8 039/100 #c620",
+        aspects={"Card Number": ["c620"], "Character": ["Mew"]},
+    )
+    identity = listing_comp_identity(row)
+    assert identity is not None
+    assert identity.card_number == "039/100"
+    assert identity.subjects == ("mew",)
+
+
 def test_listing_match_rejects_explicit_other_set_code():
     source = listing("own", "2023 Pokemon Japanese SV2A Art Rare #173 Pikachu PSA 10")
     identity = listing_comp_identity(source)

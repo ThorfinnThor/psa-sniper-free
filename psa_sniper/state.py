@@ -450,7 +450,10 @@ def put_cached_market(
 def hit_to_record(hit: ScoredHit, threshold: int) -> dict[str, Any]:
     listing = hit.listing
     now = iso_z(utc_now())
-    pricing_identity = pricing_identity_from_listing(listing, hit.cert)
+    pricing_identity = pricing_identity_from_listing(
+        listing,
+        hit.cert if hit.cert_trusted else None,
+    )
     point130_queries = build_identity_queries(pricing_identity) if pricing_identity else []
     return {
         "item_id": listing.item_id,

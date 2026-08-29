@@ -372,9 +372,13 @@ def score_hit(
     if isinstance(market_raw, Money):
         market_raw = MarketValue(market_raw, "manueller/Legacy-Preisindikator", "hoch", 1)
     market = market_raw
-    if not cert_trusted and market and market.market_type != "ebay_active_provisional":
-        # Listing-basierte eBay-Comps sind unabhängig von einer falschen Cert und
-        # dürfen als konservative Beobachtungs-Preisquelle erhalten bleiben.
+    if not cert_trusted and market and market.market_type not in {
+        "ebay_active_provisional",
+        "point130_sold",
+    }:
+        # Listing-basierte Quellen sind unabhängig von einer falschen Cert.
+        # Exakt per Listing-Identität zugeordnete 130point-Verkäufe dürfen daher
+        # ebenso wie konservative eBay-Beobachtungs-Comps erhalten bleiben.
         market = None
     acquisition = listing.total_cost
 

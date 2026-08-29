@@ -206,6 +206,67 @@ def test_repricing_prefers_exact_130point_sold_comps_without_active_comp_search(
     assert updated["price_status"] == "verified_edge"
 
 
+def test_new_130point_comps_immediately_repair_and_reprice_recent_bad_identity():
+    state = default_state()
+    row = weak_row(
+        checked_at=iso_z(utc_now() - timedelta(minutes=5)),
+        attempts=2,
+    )
+    row["title"] = "Pokemon Japanese Mew V RR PSA 10 Gem Mint s8 039/100 #c620"
+    row["pricing_identity"] = {
+        "version": 2,
+        "card_number": "c620",
+        "subjects": ["mew"],
+        "terms": ["mew", "s8"],
+        "set_code": "S8",
+        "language": "JP",
+    }
+    state["history"] = [row]
+    sold_at = iso_z(utc_now() - timedelta(days=10))
+    sales = parse_point130_sales({
+        "sales": [
+            {
+                "id": sale_id,
+                "title": title,
+                "price": {"value": value, "currency": "EUR"},
+                "sold_at": sold_at,
+                "source_url": "https://130point.com/search?new=sold",
+            }
+            for sale_id, title, value in (
+                ("a", "Pokemon Japanese S8 Fusion Arts Mew V 039/100 Holo PSA 10", 130),
+                ("b", "Mew V 039/100 RR Fusion Arts Japanese S8 Pokemon PSA 10", 140),
+            )
+        ]
+    })
+    live = Listing(
+        item_id="own",
+        title=row["title"],
+        url=row["url"],
+        price=Money(80, "EUR"),
+        created_at=utc_now() - timedelta(hours=2),
+        buying_options=["FIXED_PRICE"],
+    )
+    ebay = FakeEbay([], live=live)
+
+    result = reprice_state(
+        state,
+        settings(),
+        ebay,
+        IdentityFX(),
+        max_comp_calls=6,
+        point130_sales=sales,
+    )
+
+    assert result.checked == 1
+    assert result.point130_matches == 1
+    assert result.calls == 1
+    assert ebay.queries == []
+    updated = state["history"][0]
+    assert updated["pricing_identity"]["card_number"] == "039/100"
+    assert updated["market_value"]["market_type"] == "point130_sold"
+    assert updated["market_value"]["sample_size"] == 2
+
+
 def test_repricing_backoff_skips_recent_price_check():
     state = default_state()
     state["history"] = [
