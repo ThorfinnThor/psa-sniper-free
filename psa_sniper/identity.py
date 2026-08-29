@@ -98,11 +98,24 @@ def _card_number_near_psa(title: str) -> str | None:
 
 def card_number_from_title(title: str) -> str | None:
     near = _card_number_near_psa(title)
+    explicit_match = re.search(
+        r"(?<![a-z0-9])#\s*([a-z0-9]+(?:[\-_/][a-z0-9]+)?)",
+        title,
+        re.I,
+    )
+    explicit = normalize_text(explicit_match.group(1)) if explicit_match else None
+
+    # A pure numeric token immediately before PSA is usually the actual card
+    # number and can override an earlier magazine/issue marker (#36-37 043 JP
+    # PSA 10). Alphanumeric tokens such as SV2A/M2A are commonly set codes, so
+    # an explicit #173 must win over them.
+    if near and (not explicit or near.isdigit()):
+        return near
+    if explicit:
+        return explicit
     if near:
         return near
-    match = re.search(r"(?<![a-z0-9])#\s*([a-z0-9]+(?:[\-_/][a-z0-9]+)?)", title, re.I)
-    if match:
-        return normalize_text(match.group(1))
+
     match = re.search(
         r"(?<![a-z0-9])([a-z]{0,3}\d{1,4}[a-z]?(?:[\-_/][a-z0-9]+)?)\s+psa\s*10\b",
         title,
@@ -236,7 +249,7 @@ def pricing_identity_from_listing(
     set_code = _set_code(all_text, exclude=card_parts | set(subjects))
 
     terms: list[str] = []
-    for token in [*subjects[:2], *( [set_code.lower()] if set_code else [])]:
+    for token in [*subjects[:2], *([set_code.lower()] if set_code else [])]:
         if token and token not in terms:
             terms.append(token)
         if len(terms) >= 3:
@@ -338,8 +351,6 @@ def identity_match(
     if candidate is None or normalize_text(candidate.card_number) != normalize_text(identity.card_number):
         return 0, False, 0
 
-    # Explicit conflicts are hard rejects. Missing information is allowed but
-    # carried as a confidence penalty for the market anchor.
     penalty = 0
     for source, other in (
         (identity.language, candidate.language),
