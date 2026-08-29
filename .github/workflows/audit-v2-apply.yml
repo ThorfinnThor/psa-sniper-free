@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/workflows/audit-v2-apply.yml"
       - "scripts/apply_audit_v2_operations.py"
+      - "scripts/fix_audit_v2_operations_tests.py"
 
 permissions:
   contents: write
@@ -29,6 +30,7 @@ jobs:
         run: |
           set -euo pipefail
           python scripts/apply_audit_v2_operations.py
+          python scripts/fix_audit_v2_operations_tests.py
           pytest -q
           python -m compileall -q psa_sniper
           node --check site/template/app.js
