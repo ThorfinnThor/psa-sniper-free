@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 from psa_sniper.models import Listing, MarketValue, Money, PSACertInfo
-from psa_sniper.scoring import score_hit
+from psa_sniper.scoring import cert_identity_trust, score_hit
 
 
 def _cert() -> PSACertInfo:
@@ -250,3 +250,45 @@ def test_population_without_confirmed_psa10_grade_gets_no_low_pop_bonus():
         or "sehr niedrige PSA-10-Population" in reason
         for reason in hit.reasons
     )
+
+
+def test_non_ocr_cert_with_wrong_card_number_is_untrusted():
+    listing = Listing(
+        item_id="wrong-cert", title="2021 Bundesliga PSA 10 #99",
+        url="https://example.test/wrong-cert", price=Money(20, "EUR"),
+        created_at=datetime.now(timezone.utc), buying_options=["FIXED_PRICE"],
+    )
+    cert = _cert()
+    trusted, reason = cert_identity_trust(
+        listing, cert, cert_source="Item-Specifics", cert_confidence=1.0
+    )
+    assert trusted is False
+    assert "kartennummer" in reason.casefold()
+    hit = score_hit(
+        listing, cert_number=cert.cert_number, cert_source="Item-Specifics",
+        cert_confidence=1.0, cert=cert,
+        market_value_listing_currency=MarketValue(Money(200, "EUR"), "PSA Sales", "hoch", 5),
+        priority_terms=[], demand_terms=[],
+    )
+    assert hit.cert_trusted is False
+    assert hit.market_value is None
+    assert hit.discount_pct is None
+    assert not any("niedrige PSA-10-Population" in r for r in hit.reasons)
+
+
+def test_localized_subject_is_trusted_by_matching_card_number():
+    listing = Listing(
+        item_id="elfun-trust", title="POKEMON ELFUN EX 165 PSA 10 GEM MINT DE",
+        url="https://example.test/elfun", price=Money(100, "EUR"),
+        created_at=datetime.now(timezone.utc), buying_options=["FIXED_PRICE"],
+    )
+    cert = PSACertInfo(
+        cert_number="131778450", valid=True, grade="GEM MT 10", year="2025",
+        brand_title="POKEMON GERMAN WHT DE-WHITE FLARE", subject="WHIMSICOTT ex",
+        card_number="165", variety="SPECIAL ILLUSTRATION RARE", population=9,
+    )
+    trusted, reason = cert_identity_trust(
+        listing, cert, cert_source="OCR (Fallback)", cert_confidence=.95
+    )
+    assert trusted is True
+    assert "kartennummer" in reason.casefold()

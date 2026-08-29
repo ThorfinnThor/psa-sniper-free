@@ -18,6 +18,52 @@ PSA_CERT_URL = "https://www.psacard.com/cert/{cert}/psa"
 PSA_TOKEN_TEST_CERT = "67205095"
 
 
+def merge_cert_info(authoritative: PSACertInfo, existing: PSACertInfo | None) -> PSACertInfo:
+    """API-Identität/POP bevorzugen, vorhandene Web-Marktinfos bewahren."""
+    old = existing or PSACertInfo(cert_number=authoritative.cert_number)
+    old_source = str(old.data_source or "")
+    combined_source = "PSA Public API"
+    if old_source and "PSA Public API" not in old_source:
+        combined_source += f" + {old_source}"
+    return PSACertInfo(
+        cert_number=authoritative.cert_number or old.cert_number,
+        valid=authoritative.valid or old.valid,
+        grade=authoritative.grade or old.grade,
+        year=authoritative.year or old.year,
+        brand_title=authoritative.brand_title or old.brand_title,
+        subject=authoritative.subject or old.subject,
+        card_number=authoritative.card_number or old.card_number,
+        category=authoritative.category or old.category,
+        variety=authoritative.variety or old.variety,
+        population=(
+            authoritative.population
+            if authoritative.population is not None
+            else old.population
+        ),
+        population_higher=(
+            authoritative.population_higher
+            if authoritative.population_higher is not None
+            else old.population_higher
+        ),
+        estimate=old.estimate or authoritative.estimate,
+        recent_sales=list(old.recent_sales or authoritative.recent_sales),
+        source_url=authoritative.source_url or old.source_url,
+        data_source=combined_source,
+    )
+
+
+def cert_needs_api_upgrade(cert: PSACertInfo | None) -> bool:
+    if cert is None:
+        return True
+    source = str(cert.data_source or "")
+    if "PSA Public API" not in source:
+        return True
+    return any(
+        value is None or value == ""
+        for value in (cert.grade, cert.subject, cert.card_number, cert.population)
+    )
+
+
 class PSABudgetExceeded(RuntimeError):
     pass
 
@@ -83,11 +129,16 @@ class PSAClient:
             self.api_auth_status = "budget"
         return self.api_auth_status
 
+    def get_api_cert(self, cert_number: str) -> PSACertInfo | None:
+        if not self.access_token or self.api_rate_limited:
+            return None
+        info = self._get_api(cert_number)
+        return info if info and info.valid else None
+
     def get_cert(self, cert_number: str) -> PSACertInfo | None:
-        if self.access_token and not self.api_rate_limited:
-            info = self._get_api(cert_number)
-            if info and info.valid:
-                return info
+        info = self.get_api_cert(cert_number)
+        if info:
+            return info
         if self.web_fallback and not self.web_rate_limited:
             info = self._get_web(cert_number)
             if info and info.valid:

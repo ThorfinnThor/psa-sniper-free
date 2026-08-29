@@ -153,3 +153,12 @@ $999.00
     sales = _recent_sales(text)
     assert [row.value for row in sales] == [100.0, 120.0, 140.0]
     assert all(row.currency == "USD" for row in sales)
+
+
+def test_api_only_lookup_does_not_fall_back_to_web(monkeypatch):
+    client = PSAClient(access_token="token", web_fallback=True, delay_seconds=0, max_calls=3)
+    monkeypatch.setattr(client, "_get_api", lambda cert: None)
+    called = {"web": 0}
+    monkeypatch.setattr(client, "_get_web", lambda cert: called.__setitem__("web", called["web"] + 1))
+    assert client.get_api_cert("12345678") is None
+    assert called["web"] == 0

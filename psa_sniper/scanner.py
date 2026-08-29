@@ -28,10 +28,11 @@ from .market import (
 from .models import CertCandidate, Listing, MarketValue, RunStats, ScoredHit
 from .notify import configured_channels, notify
 from .ocr import extract_cert_from_images, ocr_enabled
-from .psa import PSABudgetExceeded, PSAClient
+from .psa import PSABudgetExceeded, PSAClient, cert_needs_api_upgrade, merge_cert_info
 from .psa_auth import normalize_psa_access_token
 from .report import write_reports
 from .scoring import (
+    cert_identity_trust,
     identity_overlap,
     is_psa10,
     market_value_from_cert,
@@ -148,12 +149,16 @@ def _public_note(exc: Exception) -> str:
     return exc.__class__.__name__
 
 
-def _ocr_cert_safe_for_market(listing: Listing, cert_candidate: CertCandidate | None, cert: Any) -> bool:
+def _cert_safe_for_market(listing: Listing, cert_candidate: CertCandidate | None, cert: Any) -> bool:
     if not cert_candidate or not cert:
         return False
-    if not cert_candidate.source.startswith("OCR"):
-        return True
-    return identity_overlap(listing, cert) > 0
+    trusted, _ = cert_identity_trust(
+        listing,
+        cert,
+        cert_source=cert_candidate.source,
+        cert_confidence=cert_candidate.confidence,
+    )
+    return trusted
 
 
 def _psa_status_label(status: str) -> str:
@@ -383,6 +388,7 @@ def run_scan() -> int:
     max_psa_market_web_calls = int(settings.get("max_psa_market_web_calls_per_run", 0))
     psa_market_web_calls = 0
     psa_market_web_min_prelim = int(settings.get("psa_market_web_min_preliminary_score", 8))
+    psa_cache_upgrades = 0
     price_diag = _new_price_diagnostics()
 
     for summary in candidates:
@@ -417,6 +423,15 @@ def run_scan() -> int:
         cert = None
         if cert_candidate:
             cert = get_cached_cert(state, cert_candidate.number, cert_cache_days)
+            if cert is not None and psa_api_status == "ok" and cert_needs_api_upgrade(cert):
+                try:
+                    api_cert = psa.get_api_cert(cert_candidate.number)
+                except PSABudgetExceeded:
+                    api_cert = None
+                if api_cert:
+                    cert = merge_cert_info(api_cert, cert)
+                    put_cached_cert(state, cert)
+                    psa_cache_upgrades += 1
             if cert is None:
                 try:
                     cert = psa.get_cert(cert_candidate.number)
@@ -448,7 +463,7 @@ def run_scan() -> int:
 
         if (
             _market_needs_upgrade(market) and cert and cert.valid and is_psa10(cert.grade)
-            and _ocr_cert_safe_for_market(listing, cert_candidate, cert)
+            and _cert_safe_for_market(listing, cert_candidate, cert)
         ):
             diag_identity_available = True
             target = listing.total_cost or listing.price
@@ -681,6 +696,8 @@ def run_scan() -> int:
     verified_edges = sum(1 for row in scored if row.price_status == "verified_edge")
     candidate_api_successes = max(0, psa.api_successes - psa_api_success_baseline)
     notes.append(f"PSA API live: {_psa_status_label(psa_api_status)}")
+    if psa_cache_upgrades:
+        notes.append(f"PSA API Cache-Upgrades: {psa_cache_upgrades}")
     notes.append(_price_diag_note(price_diag))
     notes.append(
         "Coverage: "

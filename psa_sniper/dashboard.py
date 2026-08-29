@@ -199,6 +199,7 @@ function renderCoverage() {
     ['PSA API', psaStatus, `${values.PSA ?? 0} neue gültige API-Cert(s)`],
     ['Cert bestätigt', values.Verifiziert ?? '–', 'API · Cache · Web-Fallback'],
     ['POP vorhanden', values.POP ?? '–', 'Population erfolgreich verfügbar'],
+    ['PSA Backfill', run?.psa_backfill_upgraded ?? 0, `${run?.psa_backfill_checked ?? 0} alte Cert(s) API-seitig geprüft`],
     ['Preisindikator', values.Preis ?? '–', 'PSA Sales · eBay Comps · Estimate'],
     ['eBay Comp-Suchen', values.eBayCompSuche ?? '–', `${values.eBayCompPreis ?? 0} brauchbare Comp-Preis(e)`],
     ['Preisvorteil bestätigt', values.Edge ?? '–', 'je Preisquelle erforderliches Gate erfüllt'],

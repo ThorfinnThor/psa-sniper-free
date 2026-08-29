@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
+from .identity import pricing_identity_from_listing
 from .models import Listing, MarketValue, Money, PSACertInfo, ScoredHit
 from .util import has_phrase, median_money, normalize_text
 
@@ -71,10 +72,19 @@ def info_gap(listing: Listing, cert: PSACertInfo | None) -> list[str]:
     return gaps
 
 
+def _listing_identity_text(listing: Listing) -> str:
+    aspects = " ".join(
+        str(value)
+        for values in listing.aspects.values()
+        for value in values
+    )
+    return f"{listing.title} {aspects}".strip()
+
+
 def identity_overlap(listing: Listing, cert: PSACertInfo | None) -> int:
     if not cert:
         return 0
-    title_tokens = set(normalize_text(listing.title).split()) - STOPWORDS
+    listing_tokens = set(normalize_text(_listing_identity_text(listing)).split()) - STOPWORDS
     cert_text = " ".join(
         value
         for value in (
@@ -88,7 +98,56 @@ def identity_overlap(listing: Listing, cert: PSACertInfo | None) -> int:
     )
     cert_tokens = set(normalize_text(cert_text).split()) - STOPWORDS
     meaningful = {token for token in cert_tokens if len(token) >= 2 or token.isdigit()}
-    return len(title_tokens & meaningful)
+    return len(listing_tokens & meaningful)
+
+
+def cert_identity_trust(
+    listing: Listing,
+    cert: PSACertInfo | None,
+    *,
+    cert_source: str | None = None,
+    cert_confidence: float | None = None,
+) -> tuple[bool, str]:
+    if cert is None:
+        return True, "keine Cert-Daten"
+
+    text = _listing_identity_text(listing)
+    text_n = normalize_text(text)
+    candidate = pricing_identity_from_listing(listing)
+    cert_card = normalize_text(cert.card_number or "")
+    candidate_card = normalize_text(candidate.card_number) if candidate else ""
+
+    if cert_card and candidate_card:
+        if cert_card != candidate_card:
+            return False, f"Kartennummer widerspricht Cert ({candidate_card} ≠ {cert_card})"
+        return True, "Kartennummer stimmt mit Cert überein"
+
+    subject_match = bool(cert.subject and has_phrase(text, cert.subject))
+    variety_match = bool(cert.variety and has_phrase(text, cert.variety))
+    year_match = bool(cert.year and normalize_text(cert.year) in set(text_n.split()))
+    brand_tokens = {
+        token
+        for token in normalize_text(cert.brand_title or "").split()
+        if token not in STOPWORDS and (len(token) >= 3 or token.isdigit())
+    }
+    listing_tokens = set(text_n.split())
+    brand_overlap = len(brand_tokens & listing_tokens)
+    overlap = identity_overlap(listing, cert)
+
+    if subject_match and (year_match or variety_match or brand_overlap >= 1):
+        return True, "Subject plus Set/Jahr/Variante stimmen"
+    if subject_match and not cert_card:
+        return True, "Subject stimmt mit Cert überein"
+
+    source = str(cert_source or "").casefold()
+    if source.startswith("ocr"):
+        if (cert_confidence or 0.0) >= 0.85 and overlap >= 2:
+            return True, "OCR-Cert hat mehrere Identitätsmerkmale"
+        return False, "OCR-Cert hat keine ausreichend belastbare Kartenidentität"
+
+    if overlap >= 2:
+        return True, "mehrere Cert-Merkmale stimmen mit Listing überein"
+    return False, "PSA-Cert ist nicht ausreichend der gelisteten Karte zuordenbar"
 
 
 def market_value_from_cert(cert: PSACertInfo | None) -> MarketValue | None:
@@ -192,32 +251,26 @@ def score_hit(
         adjust(1, label)
         reasons.append(label)
 
-    overlap = identity_overlap(listing, cert)
-    cert_trusted = True
-    if cert and is_psa10(cert.grade):
+    cert_trusted, cert_trust_reason = cert_identity_trust(
+        listing,
+        cert,
+        cert_source=cert_source,
+        cert_confidence=cert_confidence,
+    )
+    if cert and not cert_trusted:
+        prefix = "OCR-Cert" if str(cert_source or "").startswith("OCR") else "PSA-Cert"
+        label = f"{prefix} passt nicht sicher zum Listing: {cert_trust_reason}; POP/Preis werden ignoriert"
+        adjust(-4, label)
+        warnings.append(label)
+    elif cert and is_psa10(cert.grade):
         adjust(2, "PSA-Cert bestätigt GEM MT 10")
         reasons.append("PSA-Cert bestätigt GEM MT 10")
+        adjust(0, f"Cert-Identität bestätigt: {cert_trust_reason}")
     elif cert and cert.grade:
         label = f"Cert-Grade ist {cert.grade}, nicht PSA 10"
         adjust(-20, label)
         cert_trusted = False
         warnings.append(label)
-
-    if cert and cert_source and cert_source.startswith("OCR"):
-        confidence = cert_confidence or 0.0
-        if confidence < 0.7 and overlap == 0:
-            label = "OCR-Cert passt nicht plausibel zum Listing; POP/Preis werden ignoriert"
-            adjust(-7, label)
-            cert_trusted = False
-            warnings.append(label)
-        elif overlap == 0:
-            label = "OCR-Cert hat keine erkennbare Titelüberschneidung"
-            adjust(-2, label)
-            warnings.append(label)
-        else:
-            label = "OCR-Cert passt inhaltlich zum Listing"
-            adjust(0, label)
-            reasons.append(label)
 
     if cert and cert_trusted and is_psa10(cert.grade) and cert.population is not None:
         pop = cert.population
@@ -275,7 +328,7 @@ def score_hit(
         adjust(1, label)
         reasons.append(label)
 
-    if cert and cert.year:
+    if cert and cert_trusted and cert.year:
         year_match = re.search(r"(?:19|20)\d{2}", cert.year)
         if year_match:
             card_year = int(year_match.group(0))

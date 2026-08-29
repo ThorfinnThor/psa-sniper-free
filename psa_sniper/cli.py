@@ -11,6 +11,7 @@ from .crypto import decrypt_file, encrypt_file
 from .dashboard import build_dashboard
 from .demo import demo_state
 from .doctor import print_checks, run_doctor
+from .psa_backfill import run_psa_backfill_queue
 from .quota import prepare_scan_quota
 from .repricing import run_repricing_queue
 from .scanner import run_scan
@@ -73,6 +74,16 @@ def _cmd_scan() -> int:
     result = run_scan()
     if result != 0:
         return result
+    try:
+        backfill = run_psa_backfill_queue()
+        if backfill.status != "skipped":
+            print(
+                "PSA-Backfill abgeschlossen: "
+                f"{backfill.checked_certs} geprüft, {backfill.upgraded_certs} verbessert, "
+                f"{backfill.rescored_rows} neu bewertet, {backfill.calls} PSA-Calls."
+            )
+    except Exception as exc:
+        print(f"PSA-Backfill-Warnung: {exc.__class__.__name__}", file=sys.stderr)
     try:
         run_repricing_queue()
     except Exception as exc:  # optional maintenance must never kill a successful scan
