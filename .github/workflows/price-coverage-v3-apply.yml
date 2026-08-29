@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/workflows/price-coverage-v3-apply.yml"
       - "scripts/apply_price_coverage_v3.py"
+      - "scripts/fix_price_coverage_v3_subjects.py"
 
 permissions:
   contents: write
@@ -29,6 +30,7 @@ jobs:
         run: |
           set -euo pipefail
           python scripts/apply_price_coverage_v3.py
+          python scripts/fix_price_coverage_v3_subjects.py
           pytest -q
           python -m compileall -q psa_sniper
           node --check site/template/app.js
