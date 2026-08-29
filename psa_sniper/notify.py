@@ -5,6 +5,9 @@ from typing import Any
 
 import requests
 
+from .config import load_settings
+from .ebay import EbayClient
+from .live_check import refresh_hit_for_purchase
 from .models import ScoredHit
 
 
@@ -114,12 +117,39 @@ def notify_discord(hit: ScoredHit) -> bool:
         return False
 
 
+def _live_verified(hit: ScoredHit) -> ScoredHit | None:
+    client_id = os.getenv("EBAY_CLIENT_ID", "").strip()
+    client_secret = os.getenv("EBAY_CLIENT_SECRET", "").strip()
+    if not client_id or not client_secret:
+        return None
+    settings = load_settings()
+    ebay = EbayClient(
+        client_id,
+        client_secret,
+        environment=str(settings.get("environment", "production")),
+        marketplace_id=str(settings.get("marketplace_id", "EBAY_DE")),
+        delivery_country=str(settings.get("delivery_country", "DE")),
+        buyer_postal_code=str(settings.get("buyer_postal_code", "")),
+        delay_seconds=0,
+        max_calls=2,
+    )
+    refreshed, status = refresh_hit_for_purchase(hit, ebay, settings)
+    return refreshed if status == "active" else None
+
+
 def notify(hit: ScoredHit) -> dict[str, bool]:
     channels = configured_channels()
-    message = render_alert(hit)
+    if not channels:
+        return {}
+    # Never alert from a stale stored price. A current eBay COMPACT check must
+    # still satisfy the score and source-specific price-edge gate.
+    verified = _live_verified(hit)
+    if verified is None:
+        return {channel: False for channel in channels}
+    message = render_alert(verified)
     result: dict[str, bool] = {}
     if "telegram" in channels:
         result["telegram"] = notify_telegram(message)
     if "discord" in channels:
-        result["discord"] = notify_discord(hit)
+        result["discord"] = notify_discord(verified)
     return result

@@ -22,17 +22,17 @@ def _float_or_none(value: Any) -> float | None:
 
 
 def _infer_price_status(row: dict[str, Any]) -> str:
+    if str(row.get("availability_status") or "active") in {"ended", "unavailable"}:
+        return "unavailable"
     existing = str(row.get("price_status") or "").strip()
     if existing:
         return existing
     if bool(row.get("pure_auction")):
         return "auction"
-
     market = row.get("market_value")
     discount = _float_or_none(row.get("discount_pct"))
     if not isinstance(market, dict) or discount is None:
         return "unverified"
-
     confidence = str(market.get("confidence") or "").casefold()
     required_edge = max(
         MIN_VERIFIED_PRICE_EDGE,
@@ -60,22 +60,24 @@ def _normalize_record(row: dict[str, Any]) -> dict[str, Any]:
 
 def _normalize_run(row: dict[str, Any]) -> dict[str, Any]:
     clean = dict(row)
-    results = clean.get("results")
-    if isinstance(results, list):
-        clean["results"] = [
-            _normalize_record(item)
-            for item in results
-            if isinstance(item, dict)
-        ]
+    for field in ("results", "repricing_results"):
+        results = clean.get(field)
+        if isinstance(results, list):
+            clean[field] = [
+                _normalize_record(item)
+                for item in results
+                if isinstance(item, dict)
+            ]
     return clean
 
 
 def _dashboard_eligible(row: dict[str, Any]) -> bool:
+    if str(row.get("availability_status") or "active") in {"ended", "unavailable"}:
+        return False
     discount_value = _float_or_none(row.get("discount_pct"))
     market = row.get("market_value")
     if discount_value is None or not isinstance(market, dict):
         return True
-
     confidence = str(market.get("confidence") or "").casefold()
     if confidence == "hoch" and discount_value <= -0.25:
         return False
@@ -98,7 +100,7 @@ def dashboard_payload(state: dict[str, Any]) -> dict[str, Any]:
         if isinstance(row, dict)
     ]
     return {
-        "schema_version": 4,
+        "schema_version": 5,
         "generated_at": iso_z(utc_now()),
         "hits": history,
         "archive_hits": archive_history,
@@ -135,6 +137,23 @@ def _coverage_js() -> str:
   return { run, values, psaStatus };
 }
 
+function marketDetail(market) {
+  if (!market) return 'Preisindikator: nicht verfügbar';
+  const bits = [
+    `Preisindikator: ${money(market.money)}`,
+    market.source,
+    `Vertrauen ${market.confidence}`,
+    market.sample_size != null ? `${market.sample_size} Comp(s)` : null,
+    market.unique_sellers != null ? `${market.unique_sellers} unabh. Verkäufer` : null,
+    market.price_low != null && market.price_high != null
+      ? `Spanne ${money({value: market.price_low, currency: market.money?.currency})}–${money({value: market.price_high, currency: market.money?.currency})}`
+      : null,
+    Number.isFinite(Number(market.dispersion)) ? `Streuung ${percent(Number(market.dispersion))}` : null,
+    `Gate ${percent(Number(market.required_edge ?? .10))}`,
+  ].filter(Boolean);
+  return bits.join(' · ');
+}
+
 function ensureCoverageElements() {
   let header = $('coverageHeader');
   let grid = $('coverage');
@@ -169,6 +188,10 @@ function renderCoverage() {
     ['Preisindikator', values.Preis ?? '–', 'PSA Sales · eBay Comps · Estimate'],
     ['eBay Comp-Suchen', values.eBayCompSuche ?? '–', `${values.eBayCompPreis ?? 0} brauchbare Comp-Preis(e)`],
     ['Preisvorteil bestätigt', values.Edge ?? '–', 'je Preisquelle erforderliches Gate erfüllt'],
+    ['Repricing', run?.repricing_checked ?? 0, `${run?.repricing_improved ?? 0} Quelle(n) verbessert`],
+    ['Live-Rechecks', run?.repricing_live_rechecks ?? 0, `${run?.repricing_expired ?? 0} beendet / nicht verfügbar`],
+    ['Sekundär entdeckt', run?.secondary_candidates ?? 0, 'ältere Fehlpreise aus Leave-One-Out-Comps'],
+    ['Calls gesamt', run?.total_ebay_calls ?? run?.ebay_calls ?? '–', `davon ${run?.repricing_calls ?? 0} Repricing`],
   ];
   grid.replaceChildren(...cards.map(([label, value, note]) => {
     const card = el('article', 'stat-card');
@@ -205,8 +228,14 @@ def _apply_dashboard_ui_defaults(output_dir: Path) -> None:
         (
             "  const discount = Number(row.discount_pct);",
             "  const discount = Number(row.discount_pct);\n"
-            "  const requiredEdge = Number(row.market_value?.required_edge ?? 0.10);",
+            "  const requiredEdge = Number(row.market_value?.required_edge ?? 0.10);\n"
+            "  const priceSource = row.market_value?.source || 'schwacher Preisindikator';",
             "dynamische Preis-Gate-Schwelle",
+        ),
+        (
+            "      text: 'Der Score kann durch Low POP und Listing-Lücken hoch sein, aber der Preis basiert nur auf einem schwachen Indikator wie PSA Estimate.',",
+            "      text: `Preisquelle: ${priceSource}. Diese Quelle ist nicht stark genug für ein Kaufurteil und wird durch die Repricing-Queue weiter geprüft.`,",
+            "schwache Preisquelle",
         ),
         (
             "        ? `${distanceLabel(discount)} zum Vergleichswert. Für einen Kauf-Hit verlangen wir mindestens 10 % bestätigten Preisvorteil.`\n"
@@ -214,6 +243,19 @@ def _apply_dashboard_ui_defaults(output_dir: Path) -> None:
             "        ? `${distanceLabel(discount)} zum Vergleichswert. Für diese Preisquelle verlangen wir mindestens ${percent(requiredEdge)} bestätigten Preisvorteil.`\n"
             "        : `Für diese Preisquelle verlangen wir mindestens ${percent(requiredEdge)} bestätigten Preisvorteil.`,",
             "dynamischer Preis-Gate-Text",
+        ),
+        (
+            "  if (status === 'auction') {",
+            "  if (status === 'unavailable') {\n"
+            "    return { tone: 'bad', title: 'Nicht mehr verfügbar', text: 'Das Zielangebot wurde live geprüft und ist beendet oder nicht mehr kaufbar.' };\n"
+            "  }\n"
+            "  if (status === 'auction') {",
+            "Verfügbarkeitsstatus",
+        ),
+        (
+            "metric('Abstand', row.discount_pct == null ? '–' : distanceLabel(row.discount_pct), row.discount_pct >= .15)",
+            "metric('Abstand', row.discount_pct == null ? '–' : distanceLabel(row.discount_pct), row.price_status === 'verified_edge')",
+            "grüner Preisabstand",
         ),
         (
             "  renderStats(all);\n  renderHealth();",
@@ -225,6 +267,48 @@ def _apply_dashboard_ui_defaults(output_dir: Path) -> None:
             _coverage_js() + "function renderHealth() {",
             "Coverage-UI",
         ),
+        ("ageHours <= 1.5", "ageHours <= 3.75", "Scanner-Aktualität"),
+        (
+            "    row.market_value ? `Preisindikator: ${money(row.market_value.money)} · ${row.market_value.source} · Vertrauen ${row.market_value.confidence}` : 'Preisindikator: nicht verfügbar',",
+            "    row.market_value ? marketDetail(row.market_value) : 'Preisindikator: nicht verfügbar',",
+            "Marktqualitätsdetails",
+        ),
+        (
+            "    row.returns_accepted == null ? 'Rückgabe: unbekannt' : `Rückgabe: ${row.returns_accepted ? 'akzeptiert' : 'nicht akzeptiert'}`,",
+            "    row.returns_accepted == null ? 'Rückgabe: unbekannt' : `Rückgabe: ${row.returns_accepted ? 'akzeptiert' : 'nicht akzeptiert'}`,\n"
+            "    row.price_checked_at ? `Preis zuletzt geprüft ${formatRelative(row.price_checked_at)}` : null,\n"
+            "    row.pricing_identity ? `Preisidentität: ${[row.pricing_identity.subjects?.join(' '), row.pricing_identity.set_code, '#' + row.pricing_identity.card_number, row.pricing_identity.language, row.pricing_identity.edition, row.pricing_identity.variant].filter(Boolean).join(' · ')}` : null,",
+            "Repricing-Details",
+        ),
+        (
+            "  if (Array.isArray(run.results)) return run.results;",
+            "  if (Array.isArray(run.results)) {\n"
+            "    const merged = [...(Array.isArray(run.repricing_results) ? run.repricing_results : []), ...run.results];\n"
+            "    const seen = new Set();\n"
+            "    return merged.filter(item => item?.item_id && !seen.has(item.item_id) && seen.add(item.item_id));\n"
+            "  }",
+            "Run-Repricing-Ergebnisse",
+        ),
+        (
+            "    el('span', '', `${run.hits ?? 0} Hit(s) · ${run.near_hits ?? 0} Beobachtung(en)`),",
+            "    el('span', '', `${run.hits ?? 0} Scan-Hit(s) · ${run.near_hits ?? 0} Scan-Beobachtung(en) · Repricing ${run.repricing_hits ?? 0} Hit(s) / ${run.repricing_checked ?? 0} geprüft`),",
+            "getrennte Run-Zähler",
+        ),
+        (
+            "    const expected = Number(run.hits || 0) + Number(run.near_hits || 0);",
+            "    const expected = Number(run.hits || 0) + Number(run.near_hits || 0) + Number(run.repricing_checked || 0);",
+            "Run-Expand Repricing",
+        ),
+        (
+            "  ['Zeit', 'Queries', 'Frisch', 'Details', 'Hits / Watch', 'Calls'].forEach(value => header.append(el('span', '', value)));",
+            "  ['Zeit', 'Queries', 'Frisch', 'Details', 'Scan H/W', 'Calls gesamt'].forEach(value => header.append(el('span', '', value)));",
+            "Run-Header",
+        ),
+        (
+            "      run.ebay_calls ?? '–',",
+            "      run.total_ebay_calls ?? run.ebay_calls ?? '–',",
+            "Run-Gesamtcalls",
+        ),
     ]
     for old, new, label in replacements:
         app = _replace_required(app, old, new, label=label)
@@ -234,21 +318,9 @@ def _apply_dashboard_ui_defaults(output_dir: Path) -> None:
     index = index_path.read_text(encoding="utf-8")
     index_replacements = [
         ("<span>Min. Score</span>", "<span>Min. Screening-Score</span>", "Score-Label"),
-        (
-            '<input id="minScore" type="number" min="0" max="50" value="7">',
-            '<input id="minScore" type="number" min="4" max="50" value="4">',
-            "Score-Eingabe",
-        ),
-        (
-            '<button class="chip active" data-view="all" type="button">Alle</button>',
-            '<button class="chip" data-view="all" type="button">Alle</button>',
-            "Alle-Chip",
-        ),
-        (
-            '<button class="chip" data-view="hits" type="button">🔥 Kauf-Hits</button>',
-            '<button class="chip active" data-view="hits" type="button">🔥 Kauf-Hits</button>',
-            "Kauf-Hit-Chip",
-        ),
+        ('<input id="minScore" type="number" min="0" max="50" value="7">', '<input id="minScore" type="number" min="4" max="50" value="4">', "Score-Eingabe"),
+        ('<button class="chip active" data-view="all" type="button">Alle</button>', '<button class="chip" data-view="all" type="button">Alle</button>', "Alle-Chip"),
+        ('<button class="chip" data-view="hits" type="button">🔥 Kauf-Hits</button>', '<button class="chip active" data-view="hits" type="button">🔥 Kauf-Hits</button>', "Kauf-Hit-Chip"),
     ]
     for old, new, label in index_replacements:
         index = _replace_required(index, old, new, label=label)
@@ -268,25 +340,19 @@ def build_dashboard(
         shutil.rmtree(output_dir)
     shutil.copytree(TEMPLATE_DIR, output_dir)
     _apply_dashboard_ui_defaults(output_dir)
-
     if plain:
         envelope: dict[str, Any] = {"format": "plain", "payload": payload}
     else:
         if not password:
             raise ValueError("DASHBOARD_PASSWORD fehlt")
         envelope = encrypt_json(payload, password)
-
     (output_dir / "data.enc.json").write_text(
         json.dumps(envelope, ensure_ascii=False, separators=(",", ":")) + "\n",
         encoding="utf-8",
     )
     (output_dir / "meta.json").write_text(
         json.dumps(
-            {
-                "schema_version": 4,
-                "encrypted": not plain,
-                "generated_at": payload["generated_at"],
-            },
+            {"schema_version": 5, "encrypted": not plain, "generated_at": payload["generated_at"]},
             separators=(",", ":"),
         )
         + "\n",

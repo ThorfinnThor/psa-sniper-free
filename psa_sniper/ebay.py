@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 from urllib.parse import quote
@@ -20,6 +21,14 @@ class EbayError(RuntimeError):
 
 class EbayBudgetExceeded(EbayError):
     pass
+
+
+@dataclass(slots=True)
+class EbayQuotaSnapshot:
+    limit: int
+    remaining: int
+    count: int | None = None
+    reset: str | None = None
 
 
 class EbayClient:
@@ -41,6 +50,7 @@ class EbayClient:
         host = "api.ebay.com" if environment == "production" else "api.sandbox.ebay.com"
         self.token_url = f"https://{host}/identity/v1/oauth2/token"
         self.api_base = f"https://{host}/buy/browse/v1"
+        self.analytics_url = f"https://{host}/developer/analytics/v1_beta/rate_limit/"
         self.client_id = client_id
         self.client_secret = client_secret
         self.marketplace_id = marketplace_id
@@ -106,6 +116,45 @@ class EbayClient:
             headers["X-EBAY-C-ENDUSERCTX"] = "contextualLocation=" + ",".join(contextual)
         return headers
 
+    def get_rate_limits(self) -> EbayQuotaSnapshot | None:
+        """Best-effort Browse quota snapshot; analytics failures never break a scan."""
+        try:
+            headers = self._headers()
+            response = self.session.get(
+                self.analytics_url,
+                headers=headers,
+                params={"api_name": "browse", "api_context": "buy"},
+                timeout=20,
+            )
+        except requests.RequestException:
+            return None
+        if response.status_code == 204 or response.status_code >= 400:
+            return None
+        try:
+            payload = response.json()
+        except ValueError:
+            return None
+        rates: list[dict[str, Any]] = []
+        for group in payload.get("rateLimits", []) or []:
+            for resource in group.get("resources", []) or []:
+                for rate in resource.get("rates", []) or []:
+                    if isinstance(rate, dict):
+                        rates.append(rate)
+        usable = [
+            rate for rate in rates
+            if parse_int(rate.get("limit")) is not None and parse_int(rate.get("remaining")) is not None
+        ]
+        if not usable:
+            return None
+        # Browse resources can expose separate windows. The minimum remaining
+        # value is the conservative usable budget for the application.
+        remaining = min(int(parse_int(rate.get("remaining")) or 0) for rate in usable)
+        limit = min(int(parse_int(rate.get("limit")) or 0) for rate in usable)
+        count_values = [parse_int(rate.get("count")) for rate in usable]
+        count = max((value for value in count_values if value is not None), default=None)
+        reset = next((str(rate.get("reset")) for rate in usable if rate.get("reset")), None)
+        return EbayQuotaSnapshot(limit=limit, remaining=remaining, count=count, reset=reset)
+
     def _get(
         self,
         path: str,
@@ -136,13 +185,11 @@ class EbayClient:
                     message = str(errors[0].get("message") or errors[0].get("longMessage") or "")
             except Exception:
                 message = ""
-            if response.status_code in {401, 403}:
-                hint = (
-                    " Prüfe außerdem, ob deine App für die Browse API in Production "
-                    "freigeschaltet ist."
-                )
-            else:
-                hint = ""
+            hint = (
+                " Prüfe außerdem, ob deine App für die Browse API in Production freigeschaltet ist."
+                if response.status_code in {401, 403}
+                else ""
+            )
             raise EbayError(
                 f"eBay Browse API fehlgeschlagen ({response.status_code})"
                 + (f": {message}" if message else "")
@@ -159,24 +206,38 @@ class EbayClient:
         *,
         limit: int = 45,
         started_after: datetime | None = None,
+        offset: int = 0,
+        sort: str | None = None,
+        fixed_price_only: bool | None = None,
     ) -> list[Listing]:
+        # Discovery wants newest first. Comp searches (started_after=None) use
+        # eBay's default Best Match ranking and fixed-price inventory.
+        if sort is None and started_after is not None:
+            sort = "newlyListed"
+        if fixed_price_only is None:
+            fixed_price_only = started_after is None
         params: dict[str, Any] = {
             "q": query,
-            "sort": "newlyListed",
             "limit": min(max(1, limit), 200),
+            "offset": max(0, int(offset)),
         }
+        if sort:
+            params["sort"] = sort
         filters: list[str] = []
         if started_after:
             filters.append(f"itemStartDate:[{iso_z(started_after)}]")
         if self.delivery_country:
             filters.append(f"deliveryCountry:{self.delivery_country}")
+        if fixed_price_only:
+            filters.append("buyingOptions:{FIXED_PRICE}")
         if filters:
             params["filter"] = ",".join(filters)
         payload = self._get("/item_summary/search", params=params)
         return [self._listing_from_summary(x) for x in payload.get("itemSummaries", [])]
 
-    def get_item(self, item_id: str) -> Listing:
-        payload = self._get(f"/item/{quote(item_id, safe='')}")
+    def get_item(self, item_id: str, *, compact: bool = False) -> Listing:
+        params = {"fieldgroups": "COMPACT"} if compact else None
+        payload = self._get(f"/item/{quote(item_id, safe='')}", params=params)
         return self._listing_from_item(payload)
 
     @staticmethod
@@ -234,7 +295,7 @@ class EbayClient:
     @staticmethod
     def _seller_fields(payload: dict[str, Any]) -> tuple[str | None, float | None, int | None]:
         seller = payload.get("seller") or {}
-        username = seller.get("username")
+        username = seller.get("username") or seller.get("userId")
         percentage = parse_float(seller.get("feedbackPercentage"))
         score = parse_int(seller.get("feedbackScore"))
         return username, percentage, score

@@ -18,15 +18,12 @@ def test_dashboard_contains_only_encrypted_payload(tmp_path: Path):
     state_file = tmp_path / "state.json"
     out = tmp_path / "site"
     save_state(state_file, demo_state())
-    build_dashboard(
-        state_file,
-        out,
-        password="this-is-a-long-test-password",
-        plain=False,
-    )
+    build_dashboard(state_file, out, password="this-is-a-long-test-password", plain=False)
     raw = (out / "data.enc.json").read_text(encoding="utf-8")
     assert "Pikachu" not in raw
     assert (out / "index.html").exists()
+    meta = json.loads((out / "meta.json").read_text(encoding="utf-8"))
+    assert meta["schema_version"] == 5
 
 
 def test_dashboard_hides_high_confidence_listing_25_percent_over_market():
@@ -50,6 +47,7 @@ def test_dashboard_hides_high_confidence_listing_25_percent_over_market():
         "runs": [],
     }
     payload = dashboard_payload(state)
+    assert payload["schema_version"] == 5
     assert [row["item_id"] for row in payload["hits"]] == ["possible-buy"]
     assert payload["hits"][0]["price_status"] == "verified_edge"
     assert payload["hits"][0]["is_hit"] is True
@@ -70,8 +68,7 @@ def test_legacy_hit_without_verified_price_is_demoted_to_watch():
         ],
         "runs": [],
     }
-    payload = dashboard_payload(state)
-    row = payload["hits"][0]
+    row = dashboard_payload(state)["hits"][0]
     assert row["scan_is_hit"] is True
     assert row["is_hit"] is False
     assert row["price_status"] == "unverified"
@@ -98,3 +95,34 @@ def test_active_comp_legacy_record_uses_its_twenty_percent_required_edge():
     row = dashboard_payload(state)["hits"][0]
     assert row["price_status"] == "no_edge"
     assert row["is_hit"] is False
+
+
+def test_ended_listing_is_removed_from_main_dashboard_but_kept_in_archive():
+    state = {
+        "history": [{
+            "item_id": "ended",
+            "title": "Ended PSA 10",
+            "last_seen_at": "2026-08-29T07:00:00Z",
+            "availability_status": "ended",
+            "price_status": "verified_edge",
+            "is_hit": True,
+            "score": 15,
+        }],
+        "runs": [],
+    }
+    payload = dashboard_payload(state)
+    assert payload["hits"] == []
+    assert payload["archive_hits"][0]["price_status"] == "unavailable"
+    assert payload["archive_hits"][0]["is_hit"] is False
+
+
+def test_dashboard_build_contains_dynamic_market_quality_and_repricing_ui(tmp_path: Path):
+    state_file = tmp_path / "state.json"
+    out = tmp_path / "site"
+    save_state(state_file, demo_state())
+    build_dashboard(state_file, out, password="this-is-a-long-test-password", plain=False)
+    app = (out / "app.js").read_text(encoding="utf-8")
+    assert "unabh. Verkäufer" in app
+    assert "price_status === 'verified_edge'" in app
+    assert "repricing_checked" in app
+    assert "ageHours <= 3.75" in app

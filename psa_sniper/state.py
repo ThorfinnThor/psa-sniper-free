@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from .identity import pricing_identity_from_listing, pricing_identity_to_dict
 from .models import MarketValue, Money, PSACertInfo, RunStats, ScoredHit
 from .util import iso_z, parse_iso_datetime, utc_now
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 PERSONAL_HISTORY_FIELDS = {
     "seller",
     "seller_feedback_percentage",
@@ -30,6 +32,13 @@ def _scrub_run_row(row: dict[str, Any]) -> dict[str, Any]:
         clean["results"] = [
             _scrub_history_row(item)
             for item in results
+            if isinstance(item, dict)
+        ]
+    repricing_results = clean.get("repricing_results")
+    if isinstance(repricing_results, list):
+        clean["repricing_results"] = [
+            _scrub_history_row(item)
+            for item in repricing_results
             if isinstance(item, dict)
         ]
     return clean
@@ -129,9 +138,7 @@ def prune_state(state: dict[str, Any], settings: dict[str, Any]) -> dict[str, An
     alert_cutoff = now - timedelta(days=int(settings.get("alert_retention_days", 180)))
     history_cutoff = now - timedelta(days=int(settings.get("history_retention_days", 180)))
     cert_cache_cutoff = now - timedelta(days=int(settings.get("cert_cache_days", 7)) * 3)
-    market_cache_cutoff = now - timedelta(
-        hours=max(1, int(settings.get("market_cache_hours", 8))) * 3
-    )
+    market_cache_cutoff = now - timedelta(hours=max(1, int(settings.get("market_cache_hours", 8))) * 3)
 
     state["processed"] = {
         key: value
@@ -192,10 +199,7 @@ def mark_processed(state: dict[str, Any], item_id: str, score: int) -> None:
 
 
 def mark_alerted(state: dict[str, Any], item_id: str, channels: dict[str, bool]) -> None:
-    state.setdefault("alerted", {})[item_id] = {
-        "at": iso_z(utc_now()),
-        "channels": channels,
-    }
+    state.setdefault("alerted", {})[item_id] = {"at": iso_z(utc_now()), "channels": channels}
 
 
 def is_alerted(state: dict[str, Any], item_id: str) -> bool:
@@ -216,6 +220,10 @@ def _market_dict(market: MarketValue | None) -> dict[str, Any] | None:
         "sample_size": market.sample_size,
         "market_type": market.market_type,
         "required_edge": market.required_edge,
+        "unique_sellers": market.unique_sellers,
+        "price_low": market.price_low,
+        "price_high": market.price_high,
+        "dispersion": market.dispersion,
     }
 
 
@@ -229,6 +237,11 @@ def market_from_dict(data: dict[str, Any] | None) -> MarketValue | None:
         parsed_money = Money(float(money["value"]), str(money["currency"]))
     except (KeyError, TypeError, ValueError):
         return None
+    def f(name: str) -> float | None:
+        try:
+            return float(data[name]) if data.get(name) is not None else None
+        except (TypeError, ValueError):
+            return None
     return MarketValue(
         parsed_money,
         str(data.get("source") or "Preisindikator"),
@@ -236,6 +249,10 @@ def market_from_dict(data: dict[str, Any] | None) -> MarketValue | None:
         int(data.get("sample_size") or 0),
         market_type=str(data.get("market_type") or "generic"),
         required_edge=float(data.get("required_edge") or 0.10),
+        unique_sellers=int(data.get("unique_sellers")) if data.get("unique_sellers") is not None else None,
+        price_low=f("price_low"),
+        price_high=f("price_high"),
+        dispersion=f("dispersion"),
     )
 
 
@@ -269,7 +286,6 @@ def cert_from_dict(data: dict[str, Any]) -> PSACertInfo:
             return Money(float(obj["value"]), str(obj["currency"]))
         except (KeyError, TypeError, ValueError):
             return None
-
     return PSACertInfo(
         cert_number=str(data.get("cert_number", "")),
         valid=bool(data.get("valid")),
@@ -289,15 +305,33 @@ def cert_from_dict(data: dict[str, Any]) -> PSACertInfo:
     )
 
 
+def _cert_cache_days(cert: PSACertInfo, configured_days: int) -> int:
+    configured_days = max(1, configured_days)
+    current_year = utc_now().year
+    year = None
+    if cert.year:
+        match = re.search(r"(?:19|20)\d{2}", cert.year)
+        year = int(match.group(0)) if match else None
+    if (cert.population is not None and cert.population <= 25) or (year is not None and year >= current_year - 1):
+        return 1
+    if cert.population is not None and cert.population <= 50:
+        return min(configured_days, 3)
+    return configured_days
+
+
 def get_cached_cert(state: dict[str, Any], cert_number: str, max_age_days: int) -> PSACertInfo | None:
     row = dict(state.get("cert_cache", {})).get(cert_number)
     if not isinstance(row, dict):
         return None
-    fetched = parse_iso_datetime(row.get("fetched_at"))
-    if not fetched or fetched < utc_now() - timedelta(days=max_age_days):
-        return None
     data = row.get("data")
-    return cert_from_dict(data) if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return None
+    cert = cert_from_dict(data)
+    fetched = parse_iso_datetime(row.get("fetched_at"))
+    ttl_days = _cert_cache_days(cert, max_age_days)
+    if not fetched or fetched < utc_now() - timedelta(days=ttl_days):
+        return None
+    return cert
 
 
 def put_cached_cert(state: dict[str, Any], cert: PSACertInfo) -> None:
@@ -305,6 +339,23 @@ def put_cached_cert(state: dict[str, Any], cert: PSACertInfo) -> None:
         "fetched_at": iso_z(utc_now()),
         "data": _cert_dict(cert),
     }
+
+
+def _market_cache_hours(data: dict[str, Any], configured_hours: int) -> int:
+    kind = str(data.get("market_type") or "")
+    if kind == "psa_estimate":
+        return 1
+    if kind == "ebay_active_provisional":
+        return min(max(1, configured_hours), 4)
+    if kind == "psa_sales":
+        return max(configured_hours, 24)
+    try:
+        dispersion = float(data.get("dispersion")) if data.get("dispersion") is not None else None
+    except (TypeError, ValueError):
+        dispersion = None
+    if dispersion is not None and dispersion > 0.35:
+        return min(max(1, configured_hours), 2)
+    return max(1, configured_hours)
 
 
 def get_cached_market(
@@ -315,10 +366,16 @@ def get_cached_market(
     row = dict(state.get("market_cache", {})).get(fingerprint)
     if not isinstance(row, dict):
         return False, None
-    fetched = parse_iso_datetime(row.get("fetched_at"))
-    if not fetched or fetched < utc_now() - timedelta(hours=max_age_hours):
-        return False, None
     data = row.get("data")
+    if data is None:
+        effective_hours = min(max(1, max_age_hours), 1)
+    elif isinstance(data, dict):
+        effective_hours = _market_cache_hours(data, max_age_hours)
+    else:
+        return False, None
+    fetched = parse_iso_datetime(row.get("fetched_at"))
+    if not fetched or fetched < utc_now() - timedelta(hours=effective_hours):
+        return False, None
     return True, market_from_dict(data) if isinstance(data, dict) else None
 
 
@@ -366,8 +423,10 @@ def hit_to_record(hit: ScoredHit, threshold: int) -> dict[str, Any]:
         "cert_confidence": hit.cert_confidence,
         "cert_trusted": hit.cert_trusted,
         "cert": _cert_dict(hit.cert),
+        "pricing_identity": pricing_identity_to_dict(pricing_identity_from_listing(listing, hit.cert)),
         "market_value": _market_dict(hit.market_value),
         "discount_pct": hit.discount_pct,
+        "availability_status": "active",
     }
 
 
@@ -377,6 +436,14 @@ def upsert_history(state: dict[str, Any], hit: ScoredHit, threshold: int) -> Non
     for idx, old in enumerate(history):
         if old.get("item_id") == hit.listing.item_id:
             record["first_seen_at"] = old.get("first_seen_at") or record["first_seen_at"]
+            for field_name in (
+                "price_checked_at",
+                "price_check_attempts",
+                "price_last_improved_at",
+                "availability_checked_at",
+            ):
+                if old.get(field_name) is not None:
+                    record[field_name] = old[field_name]
             history[idx] = record
             break
     else:
@@ -403,6 +470,7 @@ def append_run(
         "hits": stats.hits,
         "near_hits": stats.near_hits,
         "ebay_calls": stats.ebay_calls,
+        "total_ebay_calls": stats.ebay_calls,
         "notes": stats.notes,
     }
     if results is not None:

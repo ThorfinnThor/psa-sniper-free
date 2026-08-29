@@ -100,6 +100,7 @@ def _market_in_listing_currency(
     converted = fx.convert(market.money, target.currency)
     if not converted:
         return market if market.money.currency == target.currency else None
+    rate = converted.value / market.money.value if market.money.value else 1.0
     return MarketValue(
         converted,
         market.source,
@@ -107,39 +108,34 @@ def _market_in_listing_currency(
         market.sample_size,
         market_type=market.market_type,
         required_edge=market.required_edge,
+        unique_sellers=market.unique_sellers,
+        price_low=market.price_low * rate if market.price_low is not None else None,
+        price_high=market.price_high * rate if market.price_high is not None else None,
+        dispersion=market.dispersion,
     )
 
 
 def _market_needs_upgrade(market: MarketValue | None) -> bool:
-    """Weak indicators such as PSA Estimate must not block better market data."""
     return market is None or market.confidence.casefold() == "niedrig"
 
 
-def _prefer_market_value(
-    current: MarketValue | None,
-    candidate: MarketValue | None,
-) -> MarketValue | None:
-    """Choose the strongest available price source without inflating confidence."""
+def _prefer_market_value(current: MarketValue | None, candidate: MarketValue | None) -> MarketValue | None:
     if candidate is None:
         return current
     if current is None:
         return candidate
-
     confidence_rank = {"hoch": 3, "mittel": 2, "niedrig": 1}
-    source_rank = {
-        "psa_sales": 4,
-        "ebay_active": 3,
-        "ebay_active_provisional": 2,
-        "psa_estimate": 1,
-    }
+    source_rank = {"psa_sales": 4, "ebay_active": 3, "ebay_active_provisional": 2, "psa_estimate": 1}
     current_key = (
         confidence_rank.get(current.confidence.casefold(), 0),
         source_rank.get(current.market_type, 0),
+        int(current.unique_sellers or 0),
         int(current.sample_size or 0),
     )
     candidate_key = (
         confidence_rank.get(candidate.confidence.casefold(), 0),
         source_rank.get(candidate.market_type, 0),
+        int(candidate.unique_sellers or 0),
         int(candidate.sample_size or 0),
     )
     return candidate if candidate_key > current_key else current
@@ -151,11 +147,7 @@ def _public_note(exc: Exception) -> str:
     return exc.__class__.__name__
 
 
-def _ocr_cert_safe_for_market(
-    listing: Listing,
-    cert_candidate: CertCandidate | None,
-    cert: Any,
-) -> bool:
+def _ocr_cert_safe_for_market(listing: Listing, cert_candidate: CertCandidate | None, cert: Any) -> bool:
     if not cert_candidate or not cert:
         return False
     if not cert_candidate.source.startswith("OCR"):
@@ -188,9 +180,7 @@ def run_scan() -> int:
     if not queries_all:
         notes.append("Keine Suchabfragen konfiguriert")
         completed = utc_now()
-        stats = RunStats(
-            iso_z(started), iso_z(completed), 0, 0, 0, 0, 0, 0, 0, 0, notes
-        )
+        stats = RunStats(iso_z(started), iso_z(completed), 0, 0, 0, 0, 0, 0, 0, 0, notes)
         append_run(state, stats, int(settings.get("run_history_max_items", 100)))
         save_state(path, state)
         write_reports([], [], stats)
@@ -208,9 +198,7 @@ def run_scan() -> int:
     if not client_id or not client_secret:
         notes.append("EBAY_CLIENT_ID oder EBAY_CLIENT_SECRET fehlt")
         completed = utc_now()
-        stats = RunStats(
-            iso_z(started), iso_z(completed), len(selected_queries), 0, 0, 0, 0, 0, 0, 0, notes
-        )
+        stats = RunStats(iso_z(started), iso_z(completed), len(selected_queries), 0, 0, 0, 0, 0, 0, 0, notes)
         append_run(state, stats, int(settings.get("run_history_max_items", 100)))
         save_state(path, state)
         write_reports([], [], stats)
@@ -237,7 +225,6 @@ def run_scan() -> int:
 
     fx = FXRates()
     fx.refresh()
-
     window_minutes = int(settings.get("run_window_minutes", 75))
     started_after = utc_now() - timedelta(minutes=window_minutes)
     summaries: dict[str, Listing] = {}
@@ -252,15 +239,9 @@ def run_scan() -> int:
             )
             raw_seen += len(rows)
             for item in rows:
-                if not item.item_id:
+                if not item.item_id or not _within_window(item, window_minutes):
                     continue
-                if not _within_window(item, window_minutes):
-                    continue
-                if not _price_ok(
-                    item,
-                    float(settings.get("minimum_price", 0)),
-                    float(settings.get("maximum_price", 1e9)),
-                ):
+                if not _price_ok(item, float(settings.get("minimum_price", 0)), float(settings.get("maximum_price", 1e9))):
                     continue
                 if not _buying_option_ok(item, bool(settings.get("include_auctions", False))):
                     continue
@@ -279,17 +260,8 @@ def run_scan() -> int:
         notes.append(f"PSA API live: {_psa_status_label(psa_api_status)}")
         completed = utc_now()
         stats = RunStats(
-            iso_z(started),
-            iso_z(completed),
-            len(selected_queries),
-            raw_seen,
-            len(summaries),
-            0,
-            psa.calls_made,
-            0,
-            0,
-            ebay.calls_made,
-            notes,
+            iso_z(started), iso_z(completed), len(selected_queries), raw_seen,
+            len(summaries), 0, psa.calls_made, 0, 0, ebay.calls_made, notes,
         )
         append_run(state, stats, int(settings.get("run_history_max_items", 100)))
         save_state(path, state)
@@ -306,7 +278,6 @@ def run_scan() -> int:
             -(listing.created_at.timestamp() if listing.created_at else 0.0),
         ),
     )
-
     cooldown = int(settings.get("processed_cooldown_minutes", 360))
     candidates = [
         row for row in ordered if not processed_recently(state, row.item_id, cooldown)
@@ -320,9 +291,7 @@ def run_scan() -> int:
     max_comp_calls = int(settings.get("max_market_comp_calls_per_run", 0))
     comp_search_limit = int(settings.get("market_comp_search_limit", 100))
     comp_required_edge = float(settings.get("market_active_required_edge", 0.20))
-    listing_market_min_prelim = int(
-        settings.get("market_listing_fallback_min_preliminary_score", 7)
-    )
+    listing_market_min_prelim = int(settings.get("market_listing_fallback_min_preliminary_score", 7))
     market_comp_calls = 0
     max_psa_market_web_calls = int(settings.get("max_psa_market_web_calls_per_run", 0))
     psa_market_web_calls = 0
@@ -342,12 +311,7 @@ def run_scan() -> int:
         cert_candidate: CertCandidate | None = extract_cert_from_aspects(listing)
         if not cert_candidate:
             cert_candidate = extract_cert_from_title(listing.title)
-        if (
-            not cert_candidate
-            and ocr_enabled()
-            and ocr_items < max_ocr_items
-            and listing.image_urls
-        ):
+        if not cert_candidate and ocr_enabled() and ocr_items < max_ocr_items and listing.image_urls:
             ocr_items += 1
             cert_candidate = extract_cert_from_images(
                 listing.image_urls,
@@ -369,9 +333,7 @@ def run_scan() -> int:
         market = _market_in_listing_currency(market_value_from_cert(cert), listing, fx)
 
         if (
-            cert
-            and cert.valid
-            and market is None
+            cert and cert.valid and market is None
             and psa_market_web_calls < max_psa_market_web_calls
             and preliminary_score(listing, priority_terms) >= psa_market_web_min_prelim
             and not psa.web_rate_limited
@@ -388,56 +350,51 @@ def run_scan() -> int:
                 put_cached_cert(state, cert)
                 market = _market_in_listing_currency(market_value_from_cert(cert), listing, fx)
 
-        # A weak source such as PSA Estimate is only a fallback. It must not stop
-        # an exact PSA-identity eBay comp lookup from replacing it.
         if (
-            _market_needs_upgrade(market)
-            and cert
-            and cert.valid
-            and is_psa10(cert.grade)
+            _market_needs_upgrade(market) and cert and cert.valid and is_psa10(cert.grade)
             and _ocr_cert_safe_for_market(listing, cert_candidate, cert)
         ):
             target = listing.total_cost or listing.price
             if target:
                 fingerprint = f"{cert_fingerprint(cert)}|{target.currency.upper()}"
                 if fingerprint.strip("|"):
-                    cached, cached_market = get_cached_market(
-                        state, fingerprint, market_cache_hours
-                    )
-                    if cached and cached_market is None:
-                        cached = False
-                    if cached:
+                    cached, cached_market = get_cached_market(state, fingerprint, market_cache_hours)
+                    if cached and cached_market is not None:
                         market = _prefer_market_value(market, cached_market)
                     elif market_comp_calls < max_comp_calls:
                         try:
                             comp_rows: list[Listing] = []
-                            comp_queries = [
-                                build_comp_query(cert),
-                                build_fallback_comp_query(cert),
-                            ]
                             values = []
-                            for comp_query in dict.fromkeys(query for query in comp_queries if query):
+                            for comp_query in dict.fromkeys(
+                                query for query in [build_comp_query(cert), build_fallback_comp_query(cert)] if query
+                            ):
                                 if market_comp_calls >= max_comp_calls:
                                     break
-                                rows = ebay.search(
-                                    comp_query,
-                                    limit=comp_search_limit,
-                                    started_after=None,
-                                )
+                                rows = ebay.search(comp_query, limit=comp_search_limit, started_after=None, offset=0)
                                 market_comp_calls += 1
                                 comp_rows.extend(rows)
                                 values = exact_active_comps(
-                                    comp_rows,
-                                    cert,
-                                    target_currency=target.currency,
-                                    fx=fx,
+                                    comp_rows, cert, target_currency=target.currency, fx=fx,
                                     exclude_item_id=listing.item_id,
                                 )
+                                if (
+                                    len(values) < 3 and len(rows) >= comp_search_limit
+                                    and market_comp_calls < max_comp_calls
+                                ):
+                                    rows2 = ebay.search(
+                                        comp_query, limit=comp_search_limit,
+                                        started_after=None, offset=comp_search_limit,
+                                    )
+                                    market_comp_calls += 1
+                                    comp_rows.extend(rows2)
+                                    values = exact_active_comps(
+                                        comp_rows, cert, target_currency=target.currency, fx=fx,
+                                        exclude_item_id=listing.item_id,
+                                    )
                                 if len(values) >= 3:
                                     break
                             comp_market = market_value_from_active_comps(
-                                values,
-                                medium_required_edge=comp_required_edge,
+                                values, medium_required_edge=comp_required_edge,
                             )
                             market = _prefer_market_value(market, comp_market)
                             if comp_market is not None:
@@ -447,9 +404,6 @@ def run_scan() -> int:
                         except EbayError:
                             notes.append("Mindestens eine eBay-Preisvergleichssuche ist fehlgeschlagen")
 
-        # If PSA identity is unavailable, use a conservative listing-identity
-        # fallback. It remains LOW confidence, but it is still preferable to an
-        # ungrounded PSA Estimate when exact active listings can be matched.
         if (
             _market_needs_upgrade(market)
             and market_comp_calls < max_comp_calls
@@ -458,15 +412,9 @@ def run_scan() -> int:
             identity = listing_comp_identity(listing)
             target = listing.total_cost or listing.price
             if identity and target:
-                fingerprint = (
-                    f"{listing_comp_fingerprint(identity)}|{target.currency.upper()}"
-                )
-                cached, cached_market = get_cached_market(
-                    state, fingerprint, market_cache_hours
-                )
-                if cached and cached_market is None:
-                    cached = False
-                if cached:
+                fingerprint = f"{listing_comp_fingerprint(identity)}|{target.currency.upper()}"
+                cached, cached_market = get_cached_market(state, fingerprint, market_cache_hours)
+                if cached and cached_market is not None:
                     market = _prefer_market_value(market, cached_market)
                 else:
                     try:
@@ -475,25 +423,31 @@ def run_scan() -> int:
                         for comp_query in build_listing_comp_queries(identity):
                             if market_comp_calls >= max_comp_calls:
                                 break
-                            rows = ebay.search(
-                                comp_query,
-                                limit=comp_search_limit,
-                                started_after=None,
-                            )
+                            rows = ebay.search(comp_query, limit=comp_search_limit, started_after=None, offset=0)
                             market_comp_calls += 1
                             comp_rows.extend(rows)
                             values = exact_active_comps_for_listing(
-                                comp_rows,
-                                identity,
-                                target_currency=target.currency,
-                                fx=fx,
+                                comp_rows, identity, target_currency=target.currency, fx=fx,
                                 exclude_item_id=listing.item_id,
                             )
+                            if (
+                                len(values) < 3 and len(rows) >= comp_search_limit
+                                and market_comp_calls < max_comp_calls
+                            ):
+                                rows2 = ebay.search(
+                                    comp_query, limit=comp_search_limit,
+                                    started_after=None, offset=comp_search_limit,
+                                )
+                                market_comp_calls += 1
+                                comp_rows.extend(rows2)
+                                values = exact_active_comps_for_listing(
+                                    comp_rows, identity, target_currency=target.currency, fx=fx,
+                                    exclude_item_id=listing.item_id,
+                                )
                             if len(values) >= 3:
                                 break
                         listing_market = market_value_from_listing_comps(
-                            values,
-                            required_edge=max(0.25, comp_required_edge),
+                            values, required_edge=max(0.25, comp_required_edge),
                         )
                         market = _prefer_market_value(market, listing_market)
                         if listing_market is not None:
@@ -515,16 +469,13 @@ def run_scan() -> int:
         )
         scored.append(hit)
         mark_processed(state, listing.item_id, hit.score)
-
         if hit.score >= int(settings.get("dashboard_min_score", 7)):
             upsert_history(state, hit, int(settings.get("hit_threshold", 11)))
 
     scored.sort(key=lambda row: row.score, reverse=True)
     threshold = int(settings.get("hit_threshold", 11))
     dashboard_min = int(settings.get("dashboard_min_score", 7))
-    hits = [row for row in scored if row.score >= threshold][
-        : int(settings.get("max_hits_per_run", 12))
-    ]
+    hits = [row for row in scored if row.score >= threshold][: int(settings.get("max_hits_per_run", 12))]
     near_hits = [row for row in scored if dashboard_min <= row.score < threshold]
 
     channels = configured_channels()
@@ -535,7 +486,7 @@ def run_scan() -> int:
         if not channels or any(statuses.values()):
             mark_alerted(state, hit.listing.item_id, statuses or {"dashboard": True})
         else:
-            notes.append("Mindestens ein Alert konnte nicht zugestellt werden; Dashboard enthält den Hit")
+            notes.append("Mindestens ein Alert konnte nicht zugestellt werden; Live-Recheck/Alert fehlgeschlagen")
 
     if market_comp_calls:
         notes.append(f"{market_comp_calls} eBay-Preisvergleichssuche(n) ausgeführt")
@@ -544,26 +495,20 @@ def run_scan() -> int:
 
     cert_detected = sum(1 for row in scored if row.cert_number)
     cert_verified = sum(1 for row in scored if row.cert and row.cert.valid)
-    pop_available = sum(
-        1 for row in scored if row.cert and row.cert.population is not None
-    )
+    pop_available = sum(1 for row in scored if row.cert and row.cert.population is not None)
     price_indicators = sum(1 for row in scored if row.market_value is not None)
     ebay_comp_prices = sum(
-        1
-        for row in scored
-        if row.market_value
-        and row.market_value.market_type in {"ebay_active", "ebay_active_provisional"}
+        1 for row in scored
+        if row.market_value and row.market_value.market_type in {"ebay_active", "ebay_active_provisional"}
     )
     verified_edges = sum(1 for row in scored if row.price_status == "verified_edge")
     candidate_api_successes = max(0, psa.api_successes - psa_api_success_baseline)
-
     notes.append(f"PSA API live: {_psa_status_label(psa_api_status)}")
     notes.append(
         "Coverage: "
         f"Details={len(scored)}; Cert={cert_detected}; PSA={candidate_api_successes}; "
         f"Verifiziert={cert_verified}; POP={pop_available}; Preis={price_indicators}; "
-        f"eBayCompSuche={market_comp_calls}; eBayCompPreis={ebay_comp_prices}; "
-        f"Edge={verified_edges}"
+        f"eBayCompSuche={market_comp_calls}; eBayCompPreis={ebay_comp_prices}; Edge={verified_edges}"
     )
 
     completed = utc_now()
@@ -580,15 +525,10 @@ def run_scan() -> int:
         ebay_calls=ebay.calls_made,
         notes=list(dict.fromkeys(notes)),
     )
-    run_candidates = [*hits, *near_hits][
-        : int(settings.get("max_run_results_per_run", 60))
-    ]
+    run_candidates = [*hits, *near_hits][: int(settings.get("max_run_results_per_run", 60))]
     run_results = [hit_to_record(row, threshold) for row in run_candidates]
     append_run(
-        state,
-        stats,
-        int(settings.get("run_history_max_items", 100)),
-        results=run_results,
+        state, stats, int(settings.get("run_history_max_items", 100)), results=run_results,
     )
     prune_state(state, settings)
     save_state(path, state)
@@ -596,10 +536,7 @@ def run_scan() -> int:
 
     privacy = os.getenv("PRIVACY_MODE", "false").strip().lower() in {"1", "true", "yes"}
     if privacy:
-        print(
-            f"Scan abgeschlossen: {len(hits)} Hits, {len(near_hits)} Beobachtungen, "
-            f"{ebay.calls_made} eBay-Calls."
-        )
+        print(f"Scan abgeschlossen: {len(hits)} Hits, {len(near_hits)} Beobachtungen, {ebay.calls_made} eBay-Calls.")
     else:
         for hit in hits:
             print(f"HIT {hit.score}: {hit.listing.title}\n  {hit.listing.url}")

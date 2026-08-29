@@ -9,6 +9,12 @@ from typing import Any
 class Money:
     value: float
     currency: str
+    # Ephemeral comp-quality metadata. These fields are deliberately omitted
+    # from to_dict(), so seller/item identifiers never leak into persisted state.
+    source_id: str | None = None
+    seller_key: str | None = None
+    identity_score: int | None = None
+    match_penalty: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {"value": round(float(self.value), 2), "currency": self.currency.upper()}
@@ -83,6 +89,10 @@ class MarketValue:
     sample_size: int = 0
     market_type: str = "generic"
     required_edge: float = 0.10
+    unique_sellers: int | None = None
+    price_low: float | None = None
+    price_high: float | None = None
+    dispersion: float | None = None
 
 
 @dataclass(slots=True)

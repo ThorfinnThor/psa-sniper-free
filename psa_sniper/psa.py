@@ -40,13 +40,17 @@ class PSAClient:
         self.api_rate_limited = False
         self.api_auth_status = "nicht_getestet"
         self.api_successes = 0
+        self.api_failure_streak = 0
+        self.api_disabled_reason: str | None = None
         self.session = requests.Session()
+        # PSA documents HTTP 500 as commonly meaning invalid credentials. Do not
+        # blindly retry 500; it is handled by the circuit breaker below.
         retry = Retry(
             total=2,
             connect=2,
             read=2,
             backoff_factor=1.0,
-            status_forcelist=(500, 502, 503, 504),
+            status_forcelist=(502, 503, 504),
             allowed_methods=frozenset({"GET"}),
             respect_retry_after_header=True,
         )
@@ -58,6 +62,10 @@ class PSAClient:
             }
         )
 
+    def _disable_api(self, reason: str) -> None:
+        self.api_disabled_reason = reason
+        self.access_token = None
+
     def _spend_call(self) -> None:
         if self.calls_made >= self.max_calls:
             raise PSABudgetExceeded(f"PSA-Call-Budget von {self.max_calls} ist ausgeschöpft")
@@ -66,12 +74,6 @@ class PSAClient:
             time.sleep(self.delay_seconds)
 
     def validate_access_token(self, cert_number: str = PSA_TOKEN_TEST_CERT) -> str:
-        """Validate the configured token without ever exposing it.
-
-        The check uses one public, known certificate. A 2xx response proves that
-        the token is accepted. Rejected/rate-limited/network states remain
-        non-fatal so the scanner can continue with cached data or the web fallback.
-        """
         if not self.access_token:
             self.api_auth_status = "nicht_konfiguriert"
             return self.api_auth_status
@@ -93,7 +95,6 @@ class PSAClient:
         return None
 
     def enrich_market_data(self, cert: PSACertInfo) -> PSACertInfo:
-        """Best-effort PSA web enrichment for sales/estimate after API identity lookup."""
         if cert.recent_sales or cert.estimate:
             return cert
         if not self.web_fallback or self.web_rate_limited:
@@ -112,11 +113,7 @@ class PSAClient:
             category=cert.category or info.category,
             variety=cert.variety or info.variety,
             population=cert.population if cert.population is not None else info.population,
-            population_higher=(
-                cert.population_higher
-                if cert.population_higher is not None
-                else info.population_higher
-            ),
+            population_higher=(cert.population_higher if cert.population_higher is not None else info.population_higher),
             estimate=info.estimate,
             recent_sales=info.recent_sales,
             source_url=cert.source_url or info.source_url,
@@ -128,6 +125,7 @@ class PSAClient:
         )
 
     def _get_api(self, cert_number: str) -> PSACertInfo | None:
+        was_initial_validation = self.api_auth_status == "nicht_getestet"
         self._spend_call()
         try:
             response = self.session.get(
@@ -137,24 +135,37 @@ class PSAClient:
             )
         except requests.RequestException:
             self.api_auth_status = "netzwerkfehler"
+            self.api_failure_streak += 1
+            if self.api_failure_streak >= 2:
+                self._disable_api("network")
             return None
         if response.status_code in {401, 403}:
             self.api_auth_status = "abgelehnt"
-            self.access_token = None
+            self.api_failure_streak += 1
+            self._disable_api("auth")
             return None
         if response.status_code == 429:
             self.api_auth_status = "rate_limited"
             self.api_rate_limited = True
+            self._disable_api("rate_limit")
             return None
         if response.status_code >= 500:
             self.api_auth_status = "servicefehler"
+            self.api_failure_streak += 1
+            # PSA says 500 usually indicates invalid credentials. On the initial
+            # token validation, disable immediately; during a run, two consecutive
+            # 5xx responses open the circuit breaker.
+            if was_initial_validation or self.api_failure_streak >= 2:
+                self._disable_api("server_or_credentials")
             return None
         if response.status_code >= 400:
             self.api_auth_status = "http_fehler"
+            self.api_failure_streak += 1
+            if self.api_failure_streak >= 2:
+                self._disable_api("http")
             return None
 
-        # Any successful HTTP response proves that PSA accepted the bearer token,
-        # even if a particular cert payload later turns out to contain no data.
+        self.api_failure_streak = 0
         self.api_auth_status = "ok"
         try:
             payload = response.json()
@@ -232,9 +243,7 @@ def parse_psa_api_json(cert_number: str, payload: Any) -> PSACertInfo:
         category=_string(_first(payload, {"category"})),
         variety=_string(_first(payload, {"variety", "varietypedigree", "pedigree"})),
         population=parse_int(_first(payload, {"population", "totalpopulation", "poppulation"})),
-        population_higher=parse_int(
-            _first(payload, {"populationhigher", "totalhigherpopulation", "pophigher"})
-        ),
+        population_higher=parse_int(_first(payload, {"populationhigher", "totalhigherpopulation", "pophigher"})),
     )
 
 
@@ -288,18 +297,11 @@ def _recent_sales(text: str, max_sales: int = 8) -> list[Money]:
     marker = "Sales of Similar Items"
     if marker not in text:
         return []
-
     section = text.split(marker, 1)[1]
-    terminators = (
-        f"\n{marker}",
-        "\nSet Registry",
-        "\nNote:",
-        "\nCompany",
-    )
+    terminators = (f"\n{marker}", "\nSet Registry", "\nNote:", "\nCompany")
     cut_positions = [pos for term in terminators if (pos := section.find(term)) >= 0]
     if cut_positions:
         section = section[: min(cut_positions)]
-
     token_pattern = re.compile(
         r"US\$\s*[\d,]+(?:\.\d{1,2})?|\$\s*[\d,]+(?:\.\d{1,2})?|"
         r"€\s*[\d.,]+|£\s*[\d,]+(?:\.\d{1,2})?"

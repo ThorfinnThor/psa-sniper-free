@@ -14,18 +14,36 @@ class IdentityFX:
 
 
 class FakeEbay:
-    def __init__(self, rows):
+    def __init__(self, rows, live=None, fail_live=False):
         self.rows = rows
+        self.live = live
+        self.fail_live = fail_live
         self.calls_made = 0
         self.queries = []
 
-    def search(self, query, *, limit, started_after):
+    def search(self, query, *, limit, started_after, offset=0, **kwargs):
         self.calls_made += 1
-        self.queries.append(query)
-        return self.rows
+        self.queries.append((query, offset))
+        return self.rows if offset == 0 else []
+
+    def get_item(self, item_id, *, compact=False):
+        from psa_sniper.ebay import EbayError
+        self.calls_made += 1
+        if self.fail_live:
+            raise EbayError("gone")
+        if self.live is not None:
+            return self.live
+        return Listing(
+            item_id=item_id,
+            title="POKEMON ELFUN EX 165 PSA 10 GEM MINT DE",
+            url=f"https://example.test/{item_id}",
+            price=Money(80, "EUR"),
+            created_at=utc_now() - timedelta(hours=2),
+            buying_options=["FIXED_PRICE"],
+        )
 
 
-def comp(item_id, price):
+def comp(item_id, price, seller):
     return Listing(
         item_id=item_id,
         title="Pokemon Elfun EX #165 PSA 10 GEM MINT",
@@ -33,6 +51,7 @@ def comp(item_id, price):
         price=Money(price, "EUR"),
         created_at=utc_now(),
         buying_options=["FIXED_PRICE"],
+        seller=seller,
     )
 
 
@@ -53,6 +72,7 @@ def weak_row(*, checked_at=None, attempts=0):
         "score": 10,
         "is_hit": False,
         "price_status": "weak_indicator",
+        "availability_status": "active",
         "cert_number": "137178450",
         "cert_source": "OCR Fallback",
         "cert_confidence": 0.95,
@@ -101,7 +121,8 @@ def settings():
         "market_cache_hours": 8,
         "reprice_min_age_minutes": 60,
         "reprice_max_history_age_hours": 72,
-        "max_reprice_items_per_run": 16,
+        "max_reprice_items_per_run": 60,
+        "secondary_discovery_min_edge": 0.25,
         "priority_terms": [],
         "demand_terms": [],
     }
@@ -120,40 +141,55 @@ def test_listing_reconstruction_preserves_nonidentifying_seller_penalties():
     assert listing.seller_feedback_score == 5
 
 
-def test_repricing_upgrades_psa_estimate_to_exact_ebay_market():
+def test_repricing_live_refresh_upgrades_psa_estimate_to_independent_ebay_market():
     state = default_state()
     row = weak_row()
     original_last_seen = row["last_seen_at"]
     state["history"] = [row]
-    ebay = FakeEbay([comp("a", 130), comp("b", 140), comp("c", 150)])
+    ebay = FakeEbay([comp("a", 130, "a"), comp("b", 140, "b"), comp("c", 150, "c")])
 
-    result = reprice_state(state, settings(), ebay, IdentityFX(), max_comp_calls=4)
+    result = reprice_state(state, settings(), ebay, IdentityFX(), max_comp_calls=6)
 
     assert result.checked == 1
+    assert result.live_rechecks == 1
     assert result.improved == 1
-    assert result.calls == 1
+    assert result.calls == 2
     updated = state["history"][0]
     assert updated["market_value"]["market_type"] == "ebay_active"
     assert updated["market_value"]["confidence"] == "mittel"
+    assert updated["market_value"]["unique_sellers"] == 3
     assert updated["price_status"] == "verified_edge"
     assert updated["is_hit"] is True
     assert updated["last_seen_at"] == original_last_seen
     assert updated["price_checked_at"]
+    assert updated["availability_checked_at"]
     assert updated["price_check_attempts"] == 1
+    assert updated["pricing_identity"]
 
 
 def test_repricing_backoff_skips_recent_price_check():
     state = default_state()
     state["history"] = [
-        weak_row(
-            checked_at=iso_z(utc_now() - timedelta(minutes=30)),
-            attempts=1,
-        )
+        weak_row(checked_at=iso_z(utc_now() - timedelta(minutes=30)), attempts=1)
     ]
-    ebay = FakeEbay([comp("a", 130), comp("b", 140), comp("c", 150)])
-
-    result = reprice_state(state, settings(), ebay, IdentityFX(), max_comp_calls=4)
-
+    ebay = FakeEbay([comp("a", 130, "a"), comp("b", 140, "b"), comp("c", 150, "c")])
+    result = reprice_state(state, settings(), ebay, IdentityFX(), max_comp_calls=6)
     assert result.checked == 0
     assert result.calls == 0
     assert ebay.queries == []
+
+
+def test_repricing_marks_unavailable_target_and_removes_hit_status():
+    state = default_state()
+    row = weak_row()
+    row["is_hit"] = True
+    row["price_status"] = "verified_edge"
+    state["history"] = [row]
+    ebay = FakeEbay([], fail_live=True)
+    result = reprice_state(state, settings(), ebay, IdentityFX(), max_comp_calls=3)
+    assert result.checked == 1
+    assert result.expired == 1
+    updated = state["history"][0]
+    assert updated["availability_status"] == "unavailable"
+    assert updated["is_hit"] is False
+    assert updated["price_status"] == "unavailable"

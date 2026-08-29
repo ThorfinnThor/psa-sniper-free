@@ -53,8 +53,17 @@ class FXRates:
         source = money.currency.upper()
         target = to_currency.upper()
         if source == target:
-            return Money(money.value, target)
-        if source not in self.per_eur or target not in self.per_eur:
-            return None
-        eur_value = money.value / self.per_eur[source]
-        return Money(eur_value * self.per_eur[target], target)
+            value = money.value
+        else:
+            if source not in self.per_eur or target not in self.per_eur:
+                return None
+            eur_value = money.value / self.per_eur[source]
+            value = eur_value * self.per_eur[target]
+        return Money(
+            value,
+            target,
+            source_id=money.source_id,
+            seller_key=money.seller_key,
+            identity_score=money.identity_score,
+            match_penalty=money.match_penalty,
+        )

@@ -18,7 +18,7 @@ class IdentityFX:
         return Money(money.value, currency)
 
 
-def listing(item_id, title, price=100, aspects=None):
+def listing(item_id, title, price=100, aspects=None, seller=None):
     return Listing(
         item_id=item_id,
         title=title,
@@ -27,6 +27,7 @@ def listing(item_id, title, price=100, aspects=None):
         created_at=datetime(2026, 8, 28, tzinfo=timezone.utc),
         buying_options=["FIXED_PRICE"],
         aspects=aspects or {},
+        seller=seller,
     )
 
 
@@ -40,6 +41,7 @@ def test_listing_identity_handles_german_whimsicott_title():
     assert identity is not None
     assert identity.card_number == "165"
     assert identity.terms == ("elfun",)
+    assert identity.language == "DE"
     assert build_listing_comp_query(identity) == "elfun 165 PSA 10"
 
 
@@ -48,21 +50,24 @@ def test_listing_identity_requires_card_number_and_psa10():
     assert listing_comp_identity(listing("2", "ELFUN EX #165 PSA 9")) is None
 
 
-def test_listing_comp_match_rejects_wrong_number_and_grade():
-    source = listing("own", "ELFUN EX #165 PSA 10")
+def test_listing_comp_match_rejects_wrong_number_grade_language_and_variant():
+    source = listing("own", "ELFUN EX #165 PSA 10 DE SPECIAL ILLUSTRATION RARE")
     identity = listing_comp_identity(source)
     assert identity is not None
-
-    score, accepted = listing_comp_identity_score(
-        listing("ok", "Pokemon Elfun EX #165 PSA 10 GEM MINT"), identity
-    )
-    assert accepted and score >= 6
-
     assert listing_comp_identity_score(
-        listing("bad-number", "Pokemon Elfun EX #164 PSA 10"), identity
+        listing("ok", "Pokemon Elfun EX #165 PSA 10 DE SPECIAL ILLUSTRATION RARE"), identity
+    )[1] is True
+    assert listing_comp_identity_score(
+        listing("bad-number", "Pokemon Elfun EX #164 PSA 10 DE SPECIAL ILLUSTRATION RARE"), identity
     )[1] is False
     assert listing_comp_identity_score(
-        listing("bad-grade", "Pokemon Elfun EX #165 PSA 9"), identity
+        listing("bad-grade", "Pokemon Elfun EX #165 PSA 9 DE SPECIAL ILLUSTRATION RARE"), identity
+    )[1] is False
+    assert listing_comp_identity_score(
+        listing("bad-language", "Pokemon Elfun EX #165 PSA 10 EN SPECIAL ILLUSTRATION RARE"), identity
+    )[1] is False
+    assert listing_comp_identity_score(
+        listing("bad-variant", "Pokemon Elfun EX #165 PSA 10 DE REVERSE HOLO"), identity
     )[1] is False
 
 
@@ -71,16 +76,12 @@ def test_provisional_market_is_always_low_confidence():
     identity = listing_comp_identity(source)
     assert identity is not None
     rows = [
-        listing("a", "ELFUN EX #165 PSA 10", 90),
-        listing("b", "ELFUN EX #165 PSA 10", 100),
-        listing("c", "ELFUN EX #165 PSA 10", 110),
+        listing("a", "ELFUN EX #165 PSA 10", 90, seller="a"),
+        listing("b", "ELFUN EX #165 PSA 10", 100, seller="b"),
+        listing("c", "ELFUN EX #165 PSA 10", 110, seller="c"),
     ]
     values = exact_active_comps_for_listing(
-        rows,
-        identity,
-        target_currency="EUR",
-        fx=IdentityFX(),
-        exclude_item_id="own",
+        rows, identity, target_currency="EUR", fx=IdentityFX(), exclude_item_id="own"
     )
     market = market_value_from_listing_comps(values, required_edge=0.20)
     assert market is not None
@@ -88,6 +89,7 @@ def test_provisional_market_is_always_low_confidence():
     assert market.confidence == "niedrig"
     assert market.market_type == "ebay_active_provisional"
     assert market.required_edge == 0.25
+    assert market.unique_sellers == 3
 
 
 def test_pikachu_query_prioritizes_subject_and_set_code():
@@ -99,9 +101,10 @@ def test_pikachu_query_prioritizes_subject_and_set_code():
     assert identity is not None
     assert identity.card_number == "173"
     assert identity.terms[:2] == ("pikachu", "sv2a")
-    assert build_listing_comp_query(identity) == "pikachu sv2a 173 PSA 10"
+    assert identity.language == "JP"
+    assert build_listing_comp_query(identity) == "pikachu SV2A 173 PSA 10"
     assert build_listing_comp_queries(identity) == [
-        "pikachu sv2a 173 PSA 10",
+        "pikachu SV2A 173 PSA 10",
         "pikachu 173 PSA 10",
     ]
 
@@ -115,7 +118,8 @@ def test_charizard_query_drops_generic_localized_words():
     assert identity is not None
     assert identity.card_number == "223"
     assert identity.terms[:2] == ("charizard", "m2a")
-    assert build_listing_comp_query(identity) == "charizard m2a 223 PSA 10"
+    assert identity.language == "KR"
+    assert build_listing_comp_query(identity) == "charizard M2A 223 PSA 10"
 
 
 def test_luffy_prefers_card_number_near_psa_over_magazine_issue_number():
@@ -127,17 +131,25 @@ def test_luffy_prefers_card_number_near_psa_over_magazine_issue_number():
     assert identity is not None
     assert identity.card_number == "043"
     assert identity.terms[:2] == ("monkey", "luffy")
+    assert identity.variant == "PROMO"
     assert build_listing_comp_query(identity) == "monkey luffy 043 PSA 10"
 
 
-def test_listing_match_keeps_set_disambiguation_even_on_fallback_query():
-    source = listing(
-        "own",
-        "2023 Pokemon Japanese SV2A Art Rare #173 Pikachu PSA 10",
-    )
+def test_listing_match_rejects_explicit_other_set_code():
+    source = listing("own", "2023 Pokemon Japanese SV2A Art Rare #173 Pikachu PSA 10")
     identity = listing_comp_identity(source)
     assert identity is not None
     good = listing("good", "Pikachu #173 SV2A PSA 10 Japanese", 120)
-    wrong_set = listing("wrong", "Pikachu #173 VSTAR Universe PSA 10", 100)
+    wrong_set = listing("wrong", "Pikachu #173 SV3A PSA 10 Japanese", 100)
     assert listing_comp_identity_score(good, identity)[1] is True
     assert listing_comp_identity_score(wrong_set, identity)[1] is False
+
+
+def test_missing_explicit_language_is_allowed_but_penalized_to_low_market_confidence():
+    source = listing("own", "Pikachu #173 SV2A PSA 10 Japanese")
+    identity = listing_comp_identity(source)
+    assert identity is not None
+    no_language = listing("unknown", "Pikachu #173 SV2A PSA 10", 120, seller="x")
+    score, accepted = listing_comp_identity_score(no_language, identity)
+    assert accepted is True
+    assert score >= 6
