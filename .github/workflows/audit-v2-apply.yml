@@ -1,12 +1,11 @@
-name: Apply Audit V2 Reliability
+name: Apply Audit V2 Quality
 
 on:
   push:
     branches: ["audit-v2-20260829"]
     paths:
       - ".github/workflows/audit-v2-apply.yml"
-      - "scripts/apply_audit_v2_reliability.py"
-      - "scripts/fix_audit_v2_test.py"
+      - "scripts/apply_audit_v2_quality.py"
 
 permissions:
   contents: write
@@ -25,33 +24,30 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements-dev.txt
-      - name: Audit-Fixes anwenden und testen
+      - name: Qualitäts-Fixes anwenden und testen
         shell: bash
         run: |
           set -euo pipefail
-          python scripts/apply_audit_v2_reliability.py
-          python scripts/fix_audit_v2_test.py
+          python scripts/apply_audit_v2_quality.py
           pytest -q
           python -m compileall -q psa_sniper
           node --check site/template/app.js
           python -m psa_sniper demo --output site/dist
+          (cd cloudflare/ebay-webhook && npm test)
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add \
-            psa_sniper/ebay.py \
-            psa_sniper/live_check.py \
-            psa_sniper/repricing.py \
+            psa_sniper/psa.py \
             psa_sniper/scoring.py \
             psa_sniper/scanner.py \
+            psa_sniper/psa_backfill.py \
+            psa_sniper/cli.py \
             psa_sniper/dashboard.py \
-            psa_sniper/quota.py \
-            psa_sniper/doctor.py \
-            tests/test_ebay_reliability.py \
-            tests/test_live_check.py \
-            tests/test_repricing.py \
+            config/settings.json \
             tests/test_scoring.py \
-            tests/test_quota.py \
-            tests/test_crypto_dashboard.py
-          git commit -m "Harden live checks, retries and quota allocation"
+            tests/test_psa_backfill.py \
+            tests/test_psa.py \
+            tests/test_quality_config.py
+          git commit -m "Harden cert trust and add PSA history backfill"
           git push origin HEAD:audit-v2-20260829
