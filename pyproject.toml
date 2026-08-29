@@ -8,7 +8,7 @@ version = "1.0.0"
 description = "Systematic eBay PSA 10 low-pop scanner with encrypted GitHub Pages dashboard"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "MIT"
 dependencies = [
   "beautifulsoup4>=4.13,<5",
   "cryptography>=43,<48",
@@ -27,6 +27,9 @@ dev = [
 
 [project.scripts]
 psa-sniper = "psa_sniper.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["psa_sniper*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

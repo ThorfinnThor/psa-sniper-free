@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from datetime import datetime, timezone
+from collections.abc import Iterable
+from datetime import UTC, datetime
 from statistics import median
-from typing import Iterable
 
 from .models import Money
 
@@ -19,11 +19,11 @@ def parse_iso_datetime(value: str | None) -> datetime | None:
 
 
 def iso_z(value: datetime) -> str:
-    return value.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return value.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def normalize_text(value: str | None) -> str:

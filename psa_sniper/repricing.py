@@ -9,7 +9,7 @@ from typing import Any
 from .config import ROOT, load_settings, state_path
 from .ebay import EbayBudgetExceeded, EbayClient, EbayError
 from .fx import FXRates
-from .identity import pricing_identity_from_dict, pricing_identity_to_dict
+from .identity import pricing_identity_from_dict
 from .listing_market import (
     build_listing_comp_queries,
     exact_active_comps_for_listing,
@@ -644,4 +644,4 @@ if __name__ == "__main__":
         raise SystemExit(run_repricing_queue())
     except Exception as exc:
         print(f"Repricing-Warnung: {exc.__class__.__name__}", file=sys.stderr)
-        raise SystemExit(0)
+        raise SystemExit(0) from exc

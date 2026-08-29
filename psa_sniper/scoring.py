@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from .identity import pricing_identity_from_listing
 from .models import Listing, MarketValue, Money, PSACertInfo, ScoredHit
@@ -336,7 +336,7 @@ def score_hit(
         year_match = re.search(r"(?:19|20)\d{2}", cert.year)
         if year_match:
             card_year = int(year_match.group(0))
-            current_year = datetime.now(timezone.utc).year
+            current_year = datetime.now(UTC).year
             if card_year >= current_year - 1:
                 label = "sehr neue Karte: Population kann noch schnell steigen"
                 adjust(-2, label)

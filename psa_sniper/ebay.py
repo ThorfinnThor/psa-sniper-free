@@ -81,7 +81,7 @@ class EbayClient:
         self.token: str | None = None
 
     def authenticate(self) -> None:
-        raw = f"{self.client_id}:{self.client_secret}".encode("utf-8")
+        raw = f"{self.client_id}:{self.client_secret}".encode()
         auth = base64.b64encode(raw).decode("ascii")
         response = self.session.post(
             self.token_url,

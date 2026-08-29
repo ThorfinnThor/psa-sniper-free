@@ -18,7 +18,7 @@ def challenge_response(challenge_code: str, verification_token: str, endpoint: s
         raise ValueError("verification_token must be 32-80 characters")
     if not endpoint.startswith("https://"):
         raise ValueError("endpoint must be https")
-    payload = f"{challenge_code}{verification_token}{endpoint}".encode("utf-8")
+    payload = f"{challenge_code}{verification_token}{endpoint}".encode()
     return hashlib.sha256(payload).hexdigest()
 
 

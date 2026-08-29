@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from typing import Any
 
@@ -10,14 +10,15 @@ from .cert_extract import extract_cert_from_aspects, extract_cert_from_title, gr
 from .config import load_queries, load_settings, state_path
 from .ebay import EbayBudgetExceeded, EbayClient, EbayError
 from .fx import FXRates
-from .live_check import refresh_hit_for_purchase
 from .listing_market import (
+    ListingCompIdentity,
     build_listing_comp_queries,
     exact_active_comps_for_listing,
     listing_comp_fingerprint,
     listing_comp_identity,
     market_value_from_listing_comps,
 )
+from .live_check import refresh_hit_for_purchase
 from .market import (
     build_comp_query,
     build_fallback_comp_query,
@@ -25,7 +26,7 @@ from .market import (
     exact_active_comps,
     market_value_from_active_comps,
 )
-from .models import CertCandidate, Listing, MarketValue, RunStats, ScoredHit
+from .models import CertCandidate, Listing, MarketValue, PSACertInfo, RunStats, ScoredHit
 from .notify import configured_channels, notify
 from .ocr import extract_cert_from_images, ocr_enabled
 from .psa import PSABudgetExceeded, PSAClient, cert_needs_api_upgrade, merge_cert_info
@@ -33,7 +34,6 @@ from .psa_auth import normalize_psa_access_token
 from .report import write_reports
 from .scoring import (
     cert_identity_trust,
-    identity_overlap,
     is_psa10,
     market_value_from_cert,
     preliminary_score,
@@ -261,6 +261,78 @@ def _price_diag_note(values: dict[str, int]) -> str:
     return "PriceDiag: " + "; ".join(f"{key}={int(values.get(key, 0))}" for key in order)
 
 
+@dataclass(slots=True)
+class _PriceCandidate:
+    listing: Listing
+    preliminary: int
+    cert_candidate: CertCandidate | None
+    cert: PSACertInfo | None
+    cert_market_safe: bool
+    market: MarketValue | None
+    listing_identity: ListingCompIdentity | None = None
+    cert_market_fingerprint: str | None = None
+    listing_market_fingerprint: str | None = None
+    screening_score: int = 0
+    search_attempted: bool = False
+    search_rows: int = 0
+    exact_matches: int = 0
+    budget_blocked: bool = False
+    search_error: bool = False
+
+    @property
+    def target_available(self) -> bool:
+        return bool(self.listing.total_cost or self.listing.price)
+
+    @property
+    def identity_available(self) -> bool:
+        return bool(self.cert_market_fingerprint or self.listing_identity)
+
+
+def _score_price_candidate(
+    candidate: _PriceCandidate,
+    *,
+    priority_terms: list[str],
+    demand_terms: list[str],
+    settings: dict[str, Any],
+    market: MarketValue | None,
+) -> ScoredHit:
+    cert_candidate = candidate.cert_candidate
+    return score_hit(
+        candidate.listing,
+        cert_number=cert_candidate.number if cert_candidate else None,
+        cert_source=cert_candidate.source if cert_candidate else None,
+        cert_confidence=cert_candidate.confidence if cert_candidate else None,
+        cert=candidate.cert,
+        market_value_listing_currency=market,
+        priority_terms=priority_terms,
+        demand_terms=demand_terms,
+        import_risk_extra_edge=float(settings.get("import_risk_extra_edge", 0.0)),
+        import_exempt_countries=list(settings.get("import_risk_exempt_countries") or []),
+        unknown_shipping_extra_edge=float(settings.get("unknown_shipping_extra_edge", 0.0)),
+    )
+
+
+def _price_candidate_priority(candidate: _PriceCandidate) -> tuple[int, int, int, int, float]:
+    """Rank globally before spending scarce comparison-search calls."""
+    cert_ready = int(
+        bool(
+            candidate.cert
+            and candidate.cert.valid
+            and candidate.cert_market_safe
+            and is_psa10(candidate.cert.grade)
+        )
+    )
+    searchable = int(candidate.identity_available and candidate.target_available)
+    created = candidate.listing.created_at.timestamp() if candidate.listing.created_at else 0.0
+    return (
+        searchable,
+        cert_ready,
+        candidate.screening_score,
+        candidate.preliminary,
+        created,
+    )
+
+
 def run_scan() -> int:
     started = utc_now()
     settings = load_settings()
@@ -376,6 +448,7 @@ def run_scan() -> int:
     ][: int(settings.get("max_detail_calls_per_run", 18))]
 
     scored: list[ScoredHit] = []
+    price_candidates: list[_PriceCandidate] = []
     ocr_items = 0
     max_ocr_items = int(settings.get("max_ocr_items_per_run", 8))
     cert_cache_days = int(settings.get("cert_cache_days", 7))
@@ -390,7 +463,10 @@ def run_scan() -> int:
     psa_market_web_min_prelim = int(settings.get("psa_market_web_min_preliminary_score", 8))
     psa_cache_upgrades = 0
     price_diag = _new_price_diagnostics()
+    demand_terms = list(settings.get("demand_terms") or [])
 
+    # Phase 1: Alle Detailkandidaten laden, Identität/Cert bestimmen und bereits
+    # vorhandene Preis-Caches nutzen. Noch keine knappen eBay-Comp-Calls ausgeben.
     for summary in candidates:
         try:
             detail = ebay.get_item(summary.item_id)
@@ -403,13 +479,6 @@ def run_scan() -> int:
 
         listing = _merge_listing(summary, detail)
         prelim = preliminary_score(listing, priority_terms)
-        diag_target = listing.total_cost or listing.price
-        diag_identity_available = False
-        diag_search_attempted = False
-        diag_search_rows = 0
-        diag_exact_matches = 0
-        diag_budget_blocked = False
-        diag_search_error = False
         cert_candidate: CertCandidate | None = extract_cert_from_aspects(listing)
         if not cert_candidate:
             cert_candidate = extract_cert_from_title(listing.title)
@@ -449,11 +518,80 @@ def run_scan() -> int:
             if cert_market_safe
             else None
         )
+        target = listing.total_cost or listing.price
+        cert_market_fingerprint_value: str | None = None
+        if (
+            _market_needs_upgrade(market) and cert and cert.valid and is_psa10(cert.grade)
+            and _cert_safe_for_market(listing, cert_candidate, cert)
+        ):
+            if target:
+                fingerprint = f"{cert_fingerprint(cert)}|{target.currency.upper()}"
+                if fingerprint.strip("|"):
+                    cert_market_fingerprint_value = fingerprint
+                    cached, cached_market = get_cached_market(state, fingerprint, market_cache_hours)
+                    if cached and cached_market is not None:
+                        market = _prefer_market_value(market, cached_market)
+        identity = (
+            listing_comp_identity(listing)
+            if _market_needs_upgrade(market) and prelim >= listing_market_min_prelim
+            else None
+        )
+        listing_market_fingerprint_value: str | None = None
+        if identity and target:
+            fingerprint = f"{listing_comp_fingerprint(identity)}|{target.currency.upper()}"
+            listing_market_fingerprint_value = fingerprint
+            cached, cached_market = get_cached_market(state, fingerprint, market_cache_hours)
+            if cached and cached_market is not None:
+                market = _prefer_market_value(market, cached_market)
+
+        candidate = _PriceCandidate(
+            listing=listing,
+            preliminary=prelim,
+            cert_candidate=cert_candidate,
+            cert=cert,
+            cert_market_safe=cert_market_safe,
+            market=market,
+            listing_identity=identity,
+            cert_market_fingerprint=cert_market_fingerprint_value,
+            listing_market_fingerprint=listing_market_fingerprint_value,
+        )
+        candidate.screening_score = _score_price_candidate(
+            candidate,
+            priority_terms=priority_terms,
+            demand_terms=demand_terms,
+            settings=settings,
+            market=None,
+        ).score
+        price_candidates.append(candidate)
+
+    # Phase 2: Erst jetzt global priorisieren. Dadurch fließt das begrenzte
+    # Vergleichspreis-Budget in die Kandidaten mit der stärksten Identität und
+    # dem höchsten Screening-Score – unabhängig von der Discovery-Reihenfolge.
+    price_candidates.sort(key=_price_candidate_priority, reverse=True)
+    eligible_price_candidates = sum(
+        1
+        for candidate in price_candidates
+        if candidate.identity_available
+        and candidate.target_available
+        and candidate.preliminary >= listing_market_min_prelim
+        and _market_needs_upgrade(candidate.market)
+    )
+    notes.append(
+        "Preis-Priorisierung: "
+        f"{eligible_price_candidates} Kandidat(en) global gerankt; "
+        f"maximal {max_comp_calls} Comp-Calls"
+    )
+
+    for candidate in price_candidates:
+        listing = candidate.listing
+        cert = candidate.cert
+        market = candidate.market
+        target = listing.total_cost or listing.price
 
         if (
-            cert and cert.valid and cert_market_safe and market is None
+            cert and cert.valid and candidate.cert_market_safe and market is None
             and psa_market_web_calls < max_psa_market_web_calls
-            and prelim >= psa_market_web_min_prelim
+            and candidate.preliminary >= psa_market_web_min_prelim
             and not psa.web_rate_limited
         ):
             before = psa.calls_made
@@ -465,162 +603,161 @@ def run_scan() -> int:
                 psa_market_web_calls += 1
             if enriched is not cert:
                 cert = enriched
-                put_cached_cert(state, cert)
-                market = _market_in_listing_currency(market_value_from_cert(cert), listing, fx)
-
-        if (
-            _market_needs_upgrade(market) and cert and cert.valid and is_psa10(cert.grade)
-            and _cert_safe_for_market(listing, cert_candidate, cert)
-        ):
-            diag_identity_available = True
-            target = listing.total_cost or listing.price
-            if target:
-                fingerprint = f"{cert_fingerprint(cert)}|{target.currency.upper()}"
-                if fingerprint.strip("|"):
-                    cached, cached_market = get_cached_market(state, fingerprint, market_cache_hours)
-                    if cached and cached_market is not None:
-                        market = _prefer_market_value(market, cached_market)
-                    if (not cached or cached_market is None or cached_market.confidence.casefold() == "niedrig") and market_comp_calls < max_comp_calls:
-                        try:
-                            comp_rows: list[Listing] = []
-                            values = []
-                            for comp_query in dict.fromkeys(
-                                query for query in [build_comp_query(cert), build_fallback_comp_query(cert)] if query
-                            ):
-                                if market_comp_calls >= max_comp_calls:
-                                    break
-                                rows = ebay.search(comp_query, limit=comp_search_limit, started_after=None, offset=0)
-                                diag_search_attempted = True
-                                diag_search_rows += len(rows)
-                                market_comp_calls += 1
-                                comp_rows.extend(rows)
-                                values = exact_active_comps(
-                                    comp_rows, cert, target_currency=target.currency, fx=fx,
-                                    exclude_item_id=listing.item_id,
-                                )
-                                diag_exact_matches = max(diag_exact_matches, len(values))
-                                if (
-                                    len(values) < 3 and len(rows) >= comp_search_limit
-                                    and market_comp_calls < max_comp_calls
-                                ):
-                                    rows2 = ebay.search(
-                                        comp_query, limit=comp_search_limit,
-                                        started_after=None, offset=comp_search_limit,
-                                    )
-                                    diag_search_attempted = True
-                                    diag_search_rows += len(rows2)
-                                    market_comp_calls += 1
-                                    comp_rows.extend(rows2)
-                                    values = exact_active_comps(
-                                        comp_rows, cert, target_currency=target.currency, fx=fx,
-                                        exclude_item_id=listing.item_id,
-                                    )
-                                    diag_exact_matches = max(diag_exact_matches, len(values))
-                                if len(values) >= 3:
-                                    break
-                            comp_market = market_value_from_active_comps(
-                                values, medium_required_edge=comp_required_edge,
-                            )
-                            market = _prefer_market_value(market, comp_market)
-                            if comp_market is not None:
-                                put_cached_market(state, fingerprint, comp_market)
-                        except EbayBudgetExceeded:
-                            diag_budget_blocked = True
-                            notes.append("eBay-Budget für weitere Preis-Comps ausgeschöpft")
-                        except EbayError:
-                            diag_search_error = True
-                            notes.append("Mindestens eine eBay-Preisvergleichssuche ist fehlgeschlagen")
+                candidate.cert = enriched
+                put_cached_cert(state, enriched)
+                market = _market_in_listing_currency(market_value_from_cert(enriched), listing, fx)
 
         if (
             _market_needs_upgrade(market)
-            and market_comp_calls < max_comp_calls
-            and prelim >= listing_market_min_prelim
+            and candidate.cert_market_fingerprint
+            and cert
+            and target
         ):
-            identity = listing_comp_identity(listing)
-            if identity is not None:
-                diag_identity_available = True
-            target = listing.total_cost or listing.price
-            if identity and target:
-                fingerprint = f"{listing_comp_fingerprint(identity)}|{target.currency.upper()}"
-                cached, cached_market = get_cached_market(state, fingerprint, market_cache_hours)
-                if cached and cached_market is not None:
-                    market = _prefer_market_value(market, cached_market)
-                if not cached or cached_market is None or cached_market.confidence.casefold() == "niedrig":
-                    try:
-                        comp_rows: list[Listing] = []
-                        values = []
-                        for comp_query in build_listing_comp_queries(identity):
-                            if market_comp_calls >= max_comp_calls:
-                                break
-                            rows = ebay.search(comp_query, limit=comp_search_limit, started_after=None, offset=0)
-                            diag_search_attempted = True
-                            diag_search_rows += len(rows)
+            if market_comp_calls >= max_comp_calls:
+                candidate.budget_blocked = True
+            else:
+                try:
+                    comp_rows: list[Listing] = []
+                    values = []
+                    for comp_query in dict.fromkeys(
+                        query for query in [build_comp_query(cert), build_fallback_comp_query(cert)] if query
+                    ):
+                        if market_comp_calls >= max_comp_calls:
+                            break
+                        rows = ebay.search(comp_query, limit=comp_search_limit, started_after=None, offset=0)
+                        candidate.search_attempted = True
+                        candidate.search_rows += len(rows)
+                        market_comp_calls += 1
+                        comp_rows.extend(rows)
+                        values = exact_active_comps(
+                            comp_rows, cert, target_currency=target.currency, fx=fx,
+                            exclude_item_id=listing.item_id,
+                        )
+                        candidate.exact_matches = max(candidate.exact_matches, len(values))
+                        if (
+                            len(values) < 3 and len(rows) >= comp_search_limit
+                            and market_comp_calls < max_comp_calls
+                        ):
+                            rows2 = ebay.search(
+                                comp_query, limit=comp_search_limit,
+                                started_after=None, offset=comp_search_limit,
+                            )
+                            candidate.search_attempted = True
+                            candidate.search_rows += len(rows2)
                             market_comp_calls += 1
-                            comp_rows.extend(rows)
-                            values = exact_active_comps_for_listing(
-                                comp_rows, identity, target_currency=target.currency, fx=fx,
+                            comp_rows.extend(rows2)
+                            values = exact_active_comps(
+                                comp_rows, cert, target_currency=target.currency, fx=fx,
                                 exclude_item_id=listing.item_id,
                             )
-                            diag_exact_matches = max(diag_exact_matches, len(values))
-                            if (
-                                len(values) < 3 and len(rows) >= comp_search_limit
-                                and market_comp_calls < max_comp_calls
-                            ):
-                                rows2 = ebay.search(
-                                    comp_query, limit=comp_search_limit,
-                                    started_after=None, offset=comp_search_limit,
-                                )
-                                diag_search_attempted = True
-                                diag_search_rows += len(rows2)
-                                market_comp_calls += 1
-                                comp_rows.extend(rows2)
-                                values = exact_active_comps_for_listing(
-                                    comp_rows, identity, target_currency=target.currency, fx=fx,
-                                    exclude_item_id=listing.item_id,
-                                )
-                                diag_exact_matches = max(diag_exact_matches, len(values))
-                            if len(values) >= 3:
-                                break
-                        listing_market = market_value_from_listing_comps(
-                            values, required_edge=max(0.25, comp_required_edge),
-                        )
-                        market = _prefer_market_value(market, listing_market)
-                        if listing_market is not None:
-                            put_cached_market(state, fingerprint, listing_market)
-                    except EbayBudgetExceeded:
-                        diag_budget_blocked = True
-                        notes.append("eBay-Budget für weitere Listing-Preis-Comps ausgeschöpft")
-                    except EbayError:
-                        diag_search_error = True
-                        notes.append("Mindestens eine Listing-Preisvergleichssuche ist fehlgeschlagen")
+                            candidate.exact_matches = max(candidate.exact_matches, len(values))
+                        if len(values) >= 3:
+                            break
+                    comp_market = market_value_from_active_comps(
+                        values, medium_required_edge=comp_required_edge,
+                    )
+                    market = _prefer_market_value(market, comp_market)
+                    if comp_market is not None:
+                        put_cached_market(state, candidate.cert_market_fingerprint, comp_market)
+                except EbayBudgetExceeded:
+                    candidate.budget_blocked = True
+                    notes.append("eBay-Budget für weitere Preis-Comps ausgeschöpft")
+                except EbayError:
+                    candidate.search_error = True
+                    notes.append("Mindestens eine eBay-Preisvergleichssuche ist fehlgeschlagen")
 
-        hit = score_hit(
-            listing,
-            cert_number=cert_candidate.number if cert_candidate else None,
-            cert_source=cert_candidate.source if cert_candidate else None,
-            cert_confidence=cert_candidate.confidence if cert_candidate else None,
-            cert=cert,
-            market_value_listing_currency=market,
+        if (
+            _market_needs_upgrade(market)
+            and candidate.listing_identity
+            and candidate.listing_market_fingerprint
+            and target
+        ):
+            if market_comp_calls >= max_comp_calls:
+                candidate.budget_blocked = True
+            else:
+                try:
+                    comp_rows = []
+                    values = []
+                    for comp_query in build_listing_comp_queries(candidate.listing_identity):
+                        if market_comp_calls >= max_comp_calls:
+                            break
+                        rows = ebay.search(comp_query, limit=comp_search_limit, started_after=None, offset=0)
+                        candidate.search_attempted = True
+                        candidate.search_rows += len(rows)
+                        market_comp_calls += 1
+                        comp_rows.extend(rows)
+                        values = exact_active_comps_for_listing(
+                            comp_rows, candidate.listing_identity,
+                            target_currency=target.currency, fx=fx,
+                            exclude_item_id=listing.item_id,
+                        )
+                        candidate.exact_matches = max(candidate.exact_matches, len(values))
+                        if (
+                            len(values) < 3 and len(rows) >= comp_search_limit
+                            and market_comp_calls < max_comp_calls
+                        ):
+                            rows2 = ebay.search(
+                                comp_query, limit=comp_search_limit,
+                                started_after=None, offset=comp_search_limit,
+                            )
+                            candidate.search_attempted = True
+                            candidate.search_rows += len(rows2)
+                            market_comp_calls += 1
+                            comp_rows.extend(rows2)
+                            values = exact_active_comps_for_listing(
+                                comp_rows, candidate.listing_identity,
+                                target_currency=target.currency, fx=fx,
+                                exclude_item_id=listing.item_id,
+                            )
+                            candidate.exact_matches = max(candidate.exact_matches, len(values))
+                        if len(values) >= 3:
+                            break
+                    listing_market = market_value_from_listing_comps(
+                        values, required_edge=max(0.25, comp_required_edge),
+                    )
+                    market = _prefer_market_value(market, listing_market)
+                    if listing_market is not None:
+                        put_cached_market(
+                            state, candidate.listing_market_fingerprint, listing_market,
+                        )
+                except EbayBudgetExceeded:
+                    candidate.budget_blocked = True
+                    notes.append("eBay-Budget für weitere Listing-Preis-Comps ausgeschöpft")
+                except EbayError:
+                    candidate.search_error = True
+                    notes.append("Mindestens eine Listing-Preisvergleichssuche ist fehlgeschlagen")
+
+        candidate.market = market
+        hit = _score_price_candidate(
+            candidate,
             priority_terms=priority_terms,
-            demand_terms=list(settings.get("demand_terms") or []),
-            import_risk_extra_edge=float(settings.get("import_risk_extra_edge", 0.0)),
-            import_exempt_countries=list(settings.get("import_risk_exempt_countries") or []),
-            unknown_shipping_extra_edge=float(settings.get("unknown_shipping_extra_edge", 0.0)),
+            demand_terms=demand_terms,
+            settings=settings,
+            market=market,
+        )
+        eligible_for_comp = bool(
+            candidate.target_available
+            and candidate.preliminary >= listing_market_min_prelim
+            and candidate.identity_available
         )
         gap_reason = _classify_price_gap(
             hit.market_value,
-            target_available=diag_target is not None,
-            preliminary=prelim,
+            target_available=candidate.target_available,
+            preliminary=candidate.preliminary,
             min_preliminary=listing_market_min_prelim,
-            identity_available=diag_identity_available,
-            search_attempted=diag_search_attempted,
-            search_rows=diag_search_rows,
-            exact_matches=diag_exact_matches,
+            identity_available=candidate.identity_available,
+            search_attempted=candidate.search_attempted,
+            search_rows=candidate.search_rows,
+            exact_matches=candidate.exact_matches,
             budget_blocked=(
-                diag_budget_blocked
-                or (hit.market_value is None and market_comp_calls >= max_comp_calls)
+                candidate.budget_blocked
+                or (
+                    hit.market_value is None
+                    and eligible_for_comp
+                    and market_comp_calls >= max_comp_calls
+                )
             ),
-            search_error=diag_search_error,
+            search_error=candidate.search_error,
         )
         if gap_reason:
             price_diag["OhnePreis"] += 1

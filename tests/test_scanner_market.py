@@ -1,8 +1,13 @@
-from psa_sniper.models import MarketValue, Money
+from datetime import UTC, datetime
+
+from psa_sniper.identity import PricingIdentity
+from psa_sniper.models import Listing, MarketValue, Money, PSACertInfo
 from psa_sniper.scanner import (
     _classify_price_gap,
     _market_needs_upgrade,
     _prefer_market_value,
+    _price_candidate_priority,
+    _PriceCandidate,
     _weak_market_diagnostics,
 )
 
@@ -80,3 +85,98 @@ def test_weak_market_diagnostics_explain_source_quality():
     flags = _weak_market_diagnostics(comps)
     assert "SchwachComps" in flags
     assert "SchwachVerkaeufer" in flags
+
+
+def price_candidate(
+    item_id: str,
+    *,
+    screening_score: int,
+    listing_identity: PricingIdentity | None = None,
+    cert: PSACertInfo | None = None,
+    cert_market_safe: bool = False,
+) -> _PriceCandidate:
+    return _PriceCandidate(
+        listing=Listing(
+            item_id=item_id,
+            title=f"PSA 10 {item_id} #25",
+            url=f"https://example.test/{item_id}",
+            price=Money(100, "EUR"),
+            created_at=datetime(2026, 8, 29, tzinfo=UTC),
+            buying_options=["FIXED_PRICE"],
+        ),
+        preliminary=8,
+        cert_candidate=None,
+        cert=cert,
+        cert_market_safe=cert_market_safe,
+        market=None,
+        listing_identity=listing_identity,
+        cert_market_fingerprint=(f"cert:{item_id}|EUR" if cert_market_safe else None),
+        screening_score=screening_score,
+    )
+
+
+def test_price_priority_spends_budget_on_searchable_candidates_first():
+    identity = PricingIdentity(
+        card_number="25",
+        subjects=("pikachu",),
+        terms=("pikachu",),
+    )
+    strong_but_unsearchable = price_candidate("no-identity", screening_score=20)
+    searchable = price_candidate(
+        "searchable",
+        screening_score=8,
+        listing_identity=identity,
+    )
+
+    ranked = sorted(
+        [strong_but_unsearchable, searchable],
+        key=_price_candidate_priority,
+        reverse=True,
+    )
+
+    assert [candidate.listing.item_id for candidate in ranked] == [
+        "searchable",
+        "no-identity",
+    ]
+
+
+def test_price_priority_prefers_verified_cert_then_screening_score():
+    identity = PricingIdentity(
+        card_number="25",
+        subjects=("pikachu",),
+        terms=("pikachu",),
+    )
+    listing_only = price_candidate(
+        "listing-only",
+        screening_score=14,
+        listing_identity=identity,
+    )
+    cert_ready = price_candidate(
+        "cert-ready",
+        screening_score=9,
+        listing_identity=identity,
+        cert=PSACertInfo(
+            cert_number="12345678",
+            valid=True,
+            grade="GEM MT 10",
+            population=7,
+        ),
+        cert_market_safe=True,
+    )
+    lower_score = price_candidate(
+        "lower-score",
+        screening_score=6,
+        listing_identity=identity,
+    )
+
+    ranked = sorted(
+        [lower_score, listing_only, cert_ready],
+        key=_price_candidate_priority,
+        reverse=True,
+    )
+
+    assert [candidate.listing.item_id for candidate in ranked] == [
+        "cert-ready",
+        "listing-only",
+        "lower-score",
+    ]

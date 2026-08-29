@@ -6,9 +6,9 @@ import os
 from pathlib import Path
 from typing import Any
 
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.primitives import hashes
 
 FORMAT = "psa-sniper-aesgcm-v1"
 ITERATIONS = 310_000

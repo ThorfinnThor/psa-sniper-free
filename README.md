@@ -64,7 +64,7 @@ Für häufige, vollständig kostenlose Läufe ist ein **öffentliches GitHub-Rep
 ## 1. Repository anlegen
 
 1. Auf GitHub ein neues Repository erstellen.
-2. Für die kostenlose 15-Minuten-Ausführung `Public` wählen.
+2. Für die kostenlosen geplanten Ausführungen `Public` wählen.
 3. Den **Inhalt** dieses Projektordners hochladen, nicht den übergeordneten Ordner.
 4. Prüfen, dass sich `.github/workflows/sniper.yml` direkt im Repository befindet.
 
@@ -174,7 +174,7 @@ Typische Ergebnisse:
 }
 ```
 
-Der Scanner bildet daraus 24 Queries. Mit zwölf Search-Calls pro Lauf wird jeweils die Hälfte verarbeitet; beim nächsten Lauf folgt automatisch die andere Hälfte.
+Der Scanner bildet daraus 24 Queries. Die aktuelle Standardkonfiguration verarbeitet den vollständigen Pool pro Deep-Scan. Bei einem kleineren Call-Budget greift weiterhin die persistente Round-Robin-Rotation.
 
 ## Private Strategie als Secret
 
@@ -202,18 +202,23 @@ Das Secret überschreibt nur die angegebenen Werte aus `config/settings.json`.
 
 Die Standardkonfiguration verwendet maximal:
 
-- 12 eBay-Suchaufrufe pro Lauf,
-- 18 eBay-Detailaufrufe pro Lauf,
-- zusammen 30 Browse-API-Aufrufe pro Lauf,
-- vier Läufe pro Stunde.
+- 24 Discovery-Suchaufrufe pro Deep-Scan,
+- bis zu 470 Detailaufrufe,
+- bis zu 80 priorisierte Preisvergleichssuchen,
+- bis zu 60 Repricing-Aufrufe,
+- insgesamt höchstens 575 eBay-Aufrufe pro Deep-Scan.
+
+Der Scheduler prüft alle fünf Minuten, ob Arbeit fällig ist. Ein echter Deep-Scan wird standardmäßig aber nur ungefähr alle drei Stunden ausgeführt. Vor jedem Lauf reduziert die Quota-Logik die Teilbudgets anhand der rollierenden 24-Stunden-Nutzung und – falls verfügbar – der eBay-Analytics.
 
 Theoretisches Maximum:
 
 ```text
-30 × 4 × 24 = 2.880 eBay-Calls pro Tag
+575 × 8 = 4.600 eBay-Calls pro Tag
 ```
 
-Damit bleibt Abstand zum üblichen Browse-API-Limit von 5.000 Calls pro Tag und Reserve für manuelle Läufe. OAuth-Aufrufe und externe PSA-/ECB-Aufrufe sind separate Dienste.
+Das ist nur die harte theoretische Obergrenze. Die Quota-Logik reserviert standardmäßig 350 Calls und reduziert spätere Läufe, sobald die rollierende Nutzung zu hoch wird. OAuth-Aufrufe und externe PSA-/ECB-Aufrufe sind separate Dienste.
+
+Vergleichspreise werden nicht mehr in Discovery-Reihenfolge gesucht. Zuerst lädt der Scanner alle Detailkandidaten, bestimmt Identität, Cert und vorhandene Caches und rankt anschließend global. Das knappe Comp-Budget geht dadurch zuerst an Kandidaten mit belastbarer Identität und starkem Screening-Signal.
 
 Erhöhe die Werte nicht blind. Der Diagnosemodus warnt bei einer Konfiguration, die das kostenlose Budget zu stark ausreizt.
 
@@ -272,6 +277,7 @@ Python 3.11 oder neuer:
 python -m venv .venv
 source .venv/bin/activate        # Windows PowerShell: .venv\Scripts\Activate.ps1
 pip install -r requirements-dev.txt
+ruff check psa_sniper
 pytest -q
 python -m compileall -q psa_sniper
 node --check site/template/app.js
@@ -395,7 +401,7 @@ Der nächste Lauf initialisiert einen neuen leeren State.
 4. **Preisindikator:** Kostenlose historische eBay-Sold-Daten sind nicht allgemein als offene Browse-API verfügbar. PSA Estimate und sichtbare ähnliche Verkäufe sind nur Indikatoren.
 5. **OCR:** Unscharfe, schräg fotografierte oder verdeckte Slabs können nicht sicher erkannt werden. Unsichere OCR-Certs werden im Score abgewertet.
 6. **Kaufprüfung:** Vor jedem Kauf Cert direkt bei PSA, Fotos, Verkäufer, Versand, Einfuhrkosten, Rückgabe und echte Verkäufe selbst prüfen.
-7. **GitHub Scheduler:** Zeitgesteuerte Actions können verspätet starten. Das 15-Minuten-Intervall ist keine Echtzeitgarantie.
+7. **GitHub Scheduler:** Zeitgesteuerte Actions können verspätet starten. Der Fünf-Minuten-Heartbeat und die Drei-Stunden-Deep-Scan-Kadenz sind keine Echtzeitgarantie.
 
 Diese Grenzen sind bewusst im Score, in Warnungen und in der Dokumentation sichtbar statt durch scheinpräzise Ergebnisse verdeckt zu werden.
 

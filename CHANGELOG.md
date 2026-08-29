@@ -16,3 +16,6 @@
 - Telegram- und Discord-Alerts
 - Datenschutzmodus für öffentliche Actions-Logs
 - Diagnosemodus, Demo-GUI und automatisierte Tests
+- installierbares Paket mit expliziter Setuptools-Paket-Discovery
+- globale zweistufige Priorisierung des knappen Preisvergleichs-Budgets
+- Ruff-Prüfung für den Produktionscode in CI und Live-Workflow

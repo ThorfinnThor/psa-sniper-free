@@ -1,6 +1,6 @@
 # Validierungsbericht – PSA Sniper Free 1.0
 
-Stand: 27. August 2026
+Stand: 29. August 2026
 
 ## Ergebnis
 
@@ -21,7 +21,8 @@ Beide Punkte werden durch Diagnose, Workflow-Fehlertexte und Troubleshooting ein
 - private Suchstrategie über GitHub Secret,
 - faire Round-Robin-Rotation vieler Queries,
 - Cooldown für bereits verarbeitete Listings,
-- eBay-Call-Budget mit 2.880 theoretischen Calls/Tag,
+- quota-gesteuertes eBay-Call-Budget mit maximal 4.600 theoretischen Calls/Tag,
+- zweistufige globale Preispriorisierung statt Comp-Budget nach Discovery-Reihenfolge,
 - Versandkosten in den Gesamtkosten,
 - reine Auktionen standardmäßig ausgeschlossen,
 - keine Discount-Punkte für laufende Auktionen,
@@ -41,7 +42,8 @@ Beide Punkte werden durch Diagnose, Workflow-Fehlertexte und Troubleshooting ein
 
 | Prüfung | Ergebnis |
 |---|---|
-| Python Unit Tests | 13 bestanden |
+| Python Unit Tests | 110 bestanden |
+| Ruff Produktionscode | bestanden |
 | Python `compileall` | bestanden |
 | JavaScript Syntaxcheck | bestanden |
 | JSON-Konfiguration | valide |
