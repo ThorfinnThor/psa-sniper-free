@@ -38,11 +38,13 @@ def run_doctor(live: bool = False) -> tuple[list[Check], bool]:
     interval_hours = max(0.25, float(settings.get("schedule_interval_hours", 0.25)))
     runs_per_day = math.ceil(24 / interval_hours)
     daily = max_calls * runs_per_day
-    reserve = 5000 - daily
-    if daily > 5000:
+    daily_limit = int(settings.get("ebay_daily_call_limit", 5000))
+    required_reserve = int(settings.get("ebay_daily_reserve_calls", 350))
+    reserve = daily_limit - daily
+    if daily > daily_limit:
         level = "FEHLER"
         ok = False
-    elif daily > 4800:
+    elif reserve < required_reserve:
         level = "WARNUNG"
     else:
         level = "OK"
@@ -51,7 +53,7 @@ def run_doctor(live: bool = False) -> tuple[list[Check], bool]:
             level,
             "eBay-Call-Budget",
             f"theoretisch max. {daily} Calls/Tag bei {interval_hours:g}h-Cron; "
-            f"Puffer zu 5000: {reserve}",
+            f"Puffer zu {daily_limit}: {reserve} (Zielreserve {required_reserve})",
         )
     )
 

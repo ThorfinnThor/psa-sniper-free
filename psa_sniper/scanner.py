@@ -10,6 +10,7 @@ from .cert_extract import extract_cert_from_aspects, extract_cert_from_title, gr
 from .config import load_queries, load_settings, state_path
 from .ebay import EbayBudgetExceeded, EbayClient, EbayError
 from .fx import FXRates
+from .live_check import refresh_hit_for_purchase
 from .listing_market import (
     build_listing_comp_queries,
     exact_active_comps_for_listing,
@@ -613,6 +614,47 @@ def run_scan() -> int:
     hits = [row for row in scored if row.score >= threshold][: int(settings.get("max_hits_per_run", 12))]
     near_hits = [row for row in scored if dashboard_min <= row.score < threshold]
 
+    # Ein frisch bewerteter Kauf-Hit wird unmittelbar vor Alert und Snapshot
+    # nochmals live geladen. Preisänderungen oder ein beendetes Angebot können
+    # ihn dadurch noch sicher zu einer Beobachtung herabstufen.
+    live_hits: list[ScoredHit] = []
+    live_demoted: list[ScoredHit] = []
+    for hit in hits:
+        refreshed, live_status = refresh_hit_for_purchase(hit, ebay, settings)
+        if live_status == "active" and refreshed is not None:
+            live_hits.append(refreshed)
+            upsert_history(state, refreshed, threshold)
+            continue
+        if live_status == "no_longer_hit" and refreshed is not None:
+            upsert_history(state, refreshed, threshold)
+            if dashboard_min <= refreshed.score < threshold:
+                live_demoted.append(refreshed)
+            notes.append("Mindestens ein Kauf-Hit wurde nach Live-Preisprüfung zur Beobachtung herabgestuft")
+            continue
+
+        availability = "ended" if live_status == "ended" else "check_failed"
+        for row in state.get("history", []):
+            if isinstance(row, dict) and row.get("item_id") == hit.listing.item_id:
+                row["availability_status"] = availability
+                row["availability_checked_at"] = iso_z(utc_now())
+                row["is_hit"] = False
+                if availability == "ended":
+                    row["price_status"] = "unavailable"
+                    row.pop("availability_error", None)
+                else:
+                    row["availability_error"] = "temporary"
+                break
+        if live_status == "budget":
+            notes.append("Kauf-Hit nicht veröffentlicht: Budget für finalen Live-Recheck erschöpft")
+        else:
+            notes.append("Kauf-Hit nicht veröffentlicht: finaler Live-Recheck vorübergehend fehlgeschlagen")
+
+    hits = live_hits
+    if live_demoted:
+        existing_near = {row.listing.item_id for row in near_hits}
+        near_hits.extend(row for row in live_demoted if row.listing.item_id not in existing_near)
+        near_hits.sort(key=lambda row: row.score, reverse=True)
+
     channels = configured_channels()
     for hit in hits:
         if is_alerted(state, hit.listing.item_id):
@@ -621,7 +663,7 @@ def run_scan() -> int:
         if not channels or any(statuses.values()):
             mark_alerted(state, hit.listing.item_id, statuses or {"dashboard": True})
         else:
-            notes.append("Mindestens ein Alert konnte nicht zugestellt werden; Live-Recheck/Alert fehlgeschlagen")
+            notes.append("Mindestens ein Alert konnte nicht zugestellt werden")
 
     if market_comp_calls:
         notes.append(f"{market_comp_calls} eBay-Preisvergleichssuche(n) ausgeführt")

@@ -1,7 +1,7 @@
 from datetime import timedelta
 
-from psa_sniper.models import Listing, Money
-from psa_sniper.repricing import listing_from_history, reprice_state
+from psa_sniper.models import Listing, MarketValue, Money
+from psa_sniper.repricing import _prefer_market, listing_from_history, reprice_state
 from psa_sniper.state import default_state
 from psa_sniper.util import iso_z, utc_now
 
@@ -14,10 +14,11 @@ class IdentityFX:
 
 
 class FakeEbay:
-    def __init__(self, rows, live=None, fail_live=False):
+    def __init__(self, rows, live=None, fail_live=False, fail_status=None):
         self.rows = rows
         self.live = live
         self.fail_live = fail_live
+        self.fail_status = fail_status
         self.calls_made = 0
         self.queries = []
 
@@ -30,7 +31,7 @@ class FakeEbay:
         from psa_sniper.ebay import EbayError
         self.calls_made += 1
         if self.fail_live:
-            raise EbayError("gone")
+            raise EbayError("gone", status_code=self.fail_status)
         if self.live is not None:
             return self.live
         return Listing(
@@ -185,7 +186,7 @@ def test_repricing_marks_unavailable_target_and_removes_hit_status():
     row["is_hit"] = True
     row["price_status"] = "verified_edge"
     state["history"] = [row]
-    ebay = FakeEbay([], fail_live=True)
+    ebay = FakeEbay([], fail_live=True, fail_status=404)
     result = reprice_state(state, settings(), ebay, IdentityFX(), max_comp_calls=3)
     assert result.checked == 1
     assert result.expired == 1
@@ -193,3 +194,44 @@ def test_repricing_marks_unavailable_target_and_removes_hit_status():
     assert updated["availability_status"] == "unavailable"
     assert updated["is_hit"] is False
     assert updated["price_status"] == "unavailable"
+
+
+def test_repricing_transient_live_error_keeps_listing_for_retry():
+    state = default_state()
+    row = weak_row()
+    row["is_hit"] = True
+    row["price_status"] = "verified_edge"
+    state["history"] = [row]
+    ebay = FakeEbay([], fail_live=True, fail_status=503)
+    result = reprice_state(state, settings(), ebay, IdentityFX(), max_comp_calls=3)
+    assert result.checked == 1
+    assert result.expired == 0
+    assert result.live_errors == 1
+    updated = state["history"][0]
+    assert updated["availability_status"] == "check_failed"
+    assert updated["is_hit"] is False
+    assert updated["price_status"] == "verified_edge"
+
+
+def test_refresh_never_replaces_psa_sales_with_weaker_active_market():
+    sales = MarketValue(
+        Money(200, "EUR"), "PSA Sales", "hoch", 5,
+        market_type="psa_sales", required_edge=0.10,
+    )
+    active = MarketValue(
+        Money(180, "EUR"), "eBay", "mittel", 5,
+        market_type="ebay_active", required_edge=0.20, unique_sellers=4,
+    )
+    assert _prefer_market(sales, active, refresh_same_type=True) is sales
+
+
+def test_refresh_replaces_stale_market_of_same_quality_class():
+    old = MarketValue(
+        Money(180, "EUR"), "eBay", "mittel", 5,
+        market_type="ebay_active", required_edge=0.20, unique_sellers=4,
+    )
+    fresh = MarketValue(
+        Money(160, "EUR"), "eBay", "mittel", 5,
+        market_type="ebay_active", required_edge=0.20, unique_sellers=4,
+    )
+    assert _prefer_market(old, fresh, refresh_same_type=True) is fresh

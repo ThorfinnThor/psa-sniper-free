@@ -16,7 +16,20 @@ from .util import iso_z, parse_float, parse_int, parse_iso_datetime
 
 
 class EbayError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        retryable: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.retryable = retryable
+
+    @property
+    def missing(self) -> bool:
+        return self.status_code in {404, 410}
 
 
 class EbayBudgetExceeded(EbayError):
@@ -60,15 +73,10 @@ class EbayClient:
         self.max_calls = max_calls
         self.calls_made = 0
         self.session = requests.Session()
-        retry = Retry(
-            total=3,
-            connect=3,
-            read=3,
-            backoff_factor=0.8,
-            status_forcelist=(429, 500, 502, 503, 504),
-            allowed_methods=frozenset({"GET", "POST"}),
-            respect_retry_after_header=True,
-        )
+        # Keine versteckten Status-Retries: jeder Browse-Versuch muss in
+        # calls_made landen, sonst kann das echte eBay-Tagesbudget überschritten
+        # werden. Retries passieren kontrolliert in _get().
+        retry = Retry(total=0, connect=0, read=0, redirect=0, status=0)
         self.session.mount("https://", HTTPAdapter(max_retries=retry))
         self.token: str | None = None
 
@@ -162,43 +170,82 @@ class EbayClient:
         params: dict[str, Any] | None = None,
         retry_auth: bool = True,
     ) -> dict[str, Any]:
-        if self.calls_made >= self.max_calls:
-            raise EbayBudgetExceeded(f"eBay-Call-Budget von {self.max_calls} ist ausgeschöpft")
-        if self.delay_seconds:
-            time.sleep(self.delay_seconds)
-        self.calls_made += 1
-        response = self.session.get(
-            f"{self.api_base}{path}",
-            headers=self._headers(),
-            params=params,
-            timeout=30,
-        )
-        if response.status_code == 401 and retry_auth:
-            self.token = None
-            return self._get(path, params=params, retry_auth=False)
-        if response.status_code >= 400:
-            message = ""
+        retryable_statuses = {429, 500, 502, 503, 504}
+        status_retries = 0
+        network_retries = 0
+        auth_retry_left = bool(retry_auth)
+
+        while True:
+            if self.calls_made >= self.max_calls:
+                raise EbayBudgetExceeded(f"eBay-Call-Budget von {self.max_calls} ist ausgeschöpft")
+            if self.delay_seconds:
+                time.sleep(self.delay_seconds)
+            self.calls_made += 1
+
             try:
-                body = response.json()
-                errors = body.get("errors") or []
-                if errors:
-                    message = str(errors[0].get("message") or errors[0].get("longMessage") or "")
-            except Exception:
+                response = self.session.get(
+                    f"{self.api_base}{path}",
+                    headers=self._headers(),
+                    params=params,
+                    timeout=30,
+                )
+            except requests.RequestException as exc:
+                # Konservativ mitzählen: auch ein Netzwerkfehler kann den Server
+                # bereits erreicht haben. Maximal zwei kontrollierte Wiederholungen.
+                if network_retries < 2:
+                    network_retries += 1
+                    time.sleep(min(4.0, 0.5 * (2 ** (network_retries - 1))))
+                    continue
+                raise EbayError(
+                    "eBay Browse API Netzwerkfehler nach Wiederholungen",
+                    retryable=True,
+                ) from exc
+
+            if response.status_code == 401 and auth_retry_left:
+                # Ein abgelaufener App-Token wird einmal erneuert. Der zweite
+                # Browse-Versuch wird ebenfalls sauber als Call gezählt.
+                self.token = None
+                auth_retry_left = False
+                continue
+
+            if response.status_code in retryable_statuses and status_retries < 2:
+                status_retries += 1
+                wait = min(4.0, 0.5 * (2 ** (status_retries - 1)))
+                raw_retry_after = response.headers.get("Retry-After")
+                if raw_retry_after:
+                    try:
+                        wait = min(10.0, max(wait, float(raw_retry_after)))
+                    except (TypeError, ValueError):
+                        pass
+                time.sleep(wait)
+                continue
+
+            if response.status_code >= 400:
                 message = ""
-            hint = (
-                " Prüfe außerdem, ob deine App für die Browse API in Production freigeschaltet ist."
-                if response.status_code in {401, 403}
-                else ""
-            )
-            raise EbayError(
-                f"eBay Browse API fehlgeschlagen ({response.status_code})"
-                + (f": {message}" if message else "")
-                + hint
-            )
-        try:
-            return response.json()
-        except ValueError as exc:
-            raise EbayError("eBay Browse API lieferte keine gültige JSON-Antwort") from exc
+                try:
+                    body = response.json()
+                    errors = body.get("errors") or []
+                    if errors:
+                        message = str(errors[0].get("message") or errors[0].get("longMessage") or "")
+                except Exception:
+                    message = ""
+                hint = (
+                    " Prüfe außerdem, ob deine App für die Browse API in Production freigeschaltet ist."
+                    if response.status_code in {401, 403}
+                    else ""
+                )
+                raise EbayError(
+                    f"eBay Browse API fehlgeschlagen ({response.status_code})"
+                    + (f": {message}" if message else "")
+                    + hint,
+                    status_code=response.status_code,
+                    retryable=response.status_code in retryable_statuses,
+                )
+
+            try:
+                return response.json()
+            except ValueError as exc:
+                raise EbayError("eBay Browse API lieferte keine gültige JSON-Antwort") from exc
 
     def search(
         self,

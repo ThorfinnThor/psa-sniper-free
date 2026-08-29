@@ -1,5 +1,6 @@
 from datetime import timedelta
 
+from psa_sniper.ebay import EbayBudgetExceeded, EbayError
 from psa_sniper.live_check import listing_available, merge_live_listing, refresh_hit_for_purchase
 from psa_sniper.models import Listing, MarketValue, Money, ScoredHit
 from psa_sniper.util import utc_now
@@ -62,3 +63,45 @@ def test_purchase_refresh_demotes_hit_after_live_price_increase():
     assert refreshed is not None
     assert status == "no_longer_hit"
     assert refreshed.price_status in {"no_edge", "over_market"}
+
+
+class FailingEbay:
+    def __init__(self, exc):
+        self.exc = exc
+    def get_item(self, item_id, *, compact=False):
+        raise self.exc
+
+
+def _hit():
+    stored = listing(80)
+    return ScoredHit(
+        listing=stored, score=13, reasons=[],
+        market_value=MarketValue(
+            Money(120, "EUR"), "eBay", "mittel", 4,
+            market_type="ebay_active", required_edge=0.20,
+        ),
+        discount_pct=1 - 80 / 120, price_status="verified_edge",
+    )
+
+
+def test_transient_live_error_is_not_misclassified_as_ended():
+    refreshed, status = refresh_hit_for_purchase(
+        _hit(), FailingEbay(EbayError("temporary", status_code=503, retryable=True)),
+        {"hit_threshold": 11},
+    )
+    assert refreshed is None
+    assert status == "check_failed"
+
+
+def test_404_live_error_is_ended():
+    _, status = refresh_hit_for_purchase(
+        _hit(), FailingEbay(EbayError("gone", status_code=404)), {"hit_threshold": 11}
+    )
+    assert status == "ended"
+
+
+def test_live_budget_exhaustion_is_distinct():
+    _, status = refresh_hit_for_purchase(
+        _hit(), FailingEbay(EbayBudgetExceeded("budget")), {"hit_threshold": 11}
+    )
+    assert status == "budget"

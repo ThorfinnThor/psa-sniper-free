@@ -5,7 +5,7 @@ from dataclasses import replace
 from typing import Any
 
 from .config import load_settings
-from .ebay import EbayClient, EbayError
+from .ebay import EbayBudgetExceeded, EbayClient, EbayError
 from .models import Listing, ScoredHit
 from .scoring import score_hit
 from .util import utc_now
@@ -62,8 +62,12 @@ def refresh_hit_for_purchase(
     settings = settings or load_settings()
     try:
         live = ebay.get_item(hit.listing.item_id, compact=True)
-    except EbayError:
-        return None, "unavailable"
+    except EbayBudgetExceeded:
+        return None, "budget"
+    except EbayError as exc:
+        if exc.missing:
+            return None, "ended"
+        return None, "check_failed"
     if not listing_available(live):
         return None, "ended"
     listing = merge_live_listing(hit.listing, live)

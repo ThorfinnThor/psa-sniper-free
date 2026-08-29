@@ -129,3 +129,18 @@ def test_dashboard_build_contains_dynamic_market_quality_and_repricing_ui(tmp_pa
     assert "Warum fehlt / schwächelt der Preis?" in app
     assert "Keine sichere Identität" in app
     assert "ageHours <= 3.75" in app
+
+
+def test_live_check_failed_is_visible_but_never_a_hit():
+    state = {
+        "history": [{
+            "item_id": "live-error", "title": "PSA 10",
+            "last_seen_at": "2026-08-29T10:00:00Z",
+            "availability_status": "check_failed",
+            "price_status": "verified_edge", "is_hit": True, "score": 14,
+        }],
+        "runs": [],
+    }
+    row = dashboard_payload(state)["hits"][0]
+    assert row["price_status"] == "live_check_failed"
+    assert row["is_hit"] is False

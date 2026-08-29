@@ -55,6 +55,8 @@ class RepriceResult:
     calls: int = 0
     live_rechecks: int = 0
     expired: int = 0
+    live_errors: int = 0
+    budget_stops: int = 0
     secondary: list[ScoredHit] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
@@ -162,10 +164,28 @@ def _market_key(market: MarketValue | None) -> tuple[int, int, int, int]:
     )
 
 
-def _prefer_market(current: MarketValue | None, candidate: MarketValue | None) -> MarketValue | None:
+def _prefer_market(
+    current: MarketValue | None,
+    candidate: MarketValue | None,
+    *,
+    refresh_same_type: bool = False,
+) -> MarketValue | None:
     if candidate is None:
         return current
-    return candidate if _market_key(candidate) > _market_key(current) else current
+    if current is None:
+        return candidate
+    if _market_key(candidate) > _market_key(current):
+        return candidate
+    if (
+        refresh_same_type
+        and candidate.market_type == current.market_type
+        and candidate.confidence.casefold() == current.confidence.casefold()
+    ):
+        # Gleiche Quellenklasse: beim fälligen Refresh soll der frische Markt
+        # den alten Wert ersetzen. Eine schwächere Quellenklasse darf dagegen
+        # niemals PSA-Sales oder eine bessere Quelle überschreiben.
+        return candidate
+    return current
 
 
 def _cert_safe_for_market(listing: Listing, candidate: CertCandidate | None, cert: PSACertInfo | None, trusted: bool) -> bool:
@@ -198,14 +218,15 @@ def _due_history_rows(state: dict[str, Any], settings: dict[str, Any]) -> list[t
     for index, row in enumerate(list(state.get("history", []))):
         if not isinstance(row, dict) or row.get("pure_auction"):
             continue
-        if row.get("availability_status") in {"ended", "unavailable"}:
+        availability = str(row.get("availability_status") or "active")
+        if availability in {"ended", "unavailable"}:
             continue
         last_seen = parse_iso_datetime(row.get("last_seen_at") or row.get("first_seen_at"))
         if last_seen is None or now - last_seen > max_age:
             continue
-        # Current buy hits always receive a fresh eBay COMPACT validation before
-        # the dashboard/alerts are finalized.
-        if row.get("is_hit"):
+        # Current buy hits and previously failed live checks receive a fresh
+        # COMPACT validation with highest priority.
+        if row.get("is_hit") or availability == "check_failed":
             priority = 10_000_000_000 + float(row.get("score") or 0) * 1_000_000
             candidates.append((index, row, priority))
             continue
@@ -368,14 +389,25 @@ def reprice_state(
         try:
             live = ebay.get_item(stored.item_id, compact=True)
             result.live_rechecks += 1
-        except (EbayError, EbayBudgetExceeded):
+        except EbayBudgetExceeded:
+            result.notes.append("Repricing: Live-Recheck wegen eBay-Budget gestoppt")
+            result.budget_stops += 1
+            break
+        except EbayError as exc:
             updated = dict(old)
-            updated["availability_status"] = "unavailable"
             updated["availability_checked_at"] = now_text
             updated["is_hit"] = False
-            updated["price_status"] = "unavailable"
+            if exc.missing:
+                updated["availability_status"] = "unavailable"
+                updated["price_status"] = "unavailable"
+                updated.pop("availability_error", None)
+                result.expired += 1
+            else:
+                updated["availability_status"] = "check_failed"
+                updated["availability_error"] = "temporary"
+                result.live_errors += 1
+                result.notes.append("Repricing: mindestens ein Live-Recheck war vorübergehend nicht möglich")
             history[index] = updated
-            result.expired += 1
             continue
         if not listing_available(live):
             updated = dict(old)
@@ -417,10 +449,11 @@ def reprice_state(
                         ebay, cert, listing, target.currency, fx, comp_limit, start_calls, max_comp_calls
                     )
                     comp_market = market_value_from_active_comps(cert_values, medium_required_edge=comp_required_edge)
-                    if force_refresh and comp_market is not None:
-                        market = comp_market
-                    else:
-                        market = _prefer_market(market, comp_market)
+                    market = _prefer_market(
+                        market,
+                        comp_market,
+                        refresh_same_type=force_refresh,
+                    )
                     if comp_market is not None:
                         put_cached_market(state, fingerprint, comp_market)
                 except EbayBudgetExceeded:
@@ -477,6 +510,7 @@ def reprice_state(
             if old.get(field_name) is not None:
                 updated[field_name] = old[field_name]
         updated["availability_status"] = "active"
+        updated.pop("availability_error", None)
         updated["availability_checked_at"] = now_text
         updated["price_checked_at"] = now_text
         try:
@@ -507,7 +541,8 @@ def _append_summary(result: RepriceResult, hit_count: int) -> None:
             "\n- Repricing-Queue: "
             f"{result.checked} geprüft, {result.improved} Preisquelle(n) verbessert, "
             f"{result.live_rechecks} live geprüft, {result.expired} beendet, "
-            f"{len(result.secondary)} sekundär entdeckt, {hit_count} Kauf-Hit(s), "
+            f"{result.live_errors} Live-Fehler, {len(result.secondary)} sekundär entdeckt, "
+            f"{hit_count} Kauf-Hit(s), "
             f"{result.calls} zusätzliche eBay-Calls.\n"
         )
 
@@ -566,6 +601,8 @@ def run_repricing_queue() -> int:
         latest["repricing_calls"] = result.calls
         latest["repricing_live_rechecks"] = result.live_rechecks
         latest["repricing_expired"] = result.expired
+        latest["repricing_live_errors"] = result.live_errors
+        latest["repricing_budget_stops"] = result.budget_stops
         latest["secondary_candidates"] = len(result.secondary)
         latest["total_ebay_calls"] = previous_calls + result.calls
         notes = list(latest.get("notes") or [])
@@ -573,7 +610,8 @@ def run_repricing_queue() -> int:
         notes.append(
             "Repricing: "
             f"geprüft={result.checked}; verbessert={result.improved}; live={result.live_rechecks}; "
-            f"beendet={result.expired}; sekundär={len(result.secondary)}; Hits={len(repriced_hits)}; "
+            f"beendet={result.expired}; LiveFehler={result.live_errors}; "
+            f"sekundär={len(result.secondary)}; Hits={len(repriced_hits)}; "
             f"eBayCalls={result.calls}"
         )
         latest["notes"] = list(dict.fromkeys(notes))
@@ -587,8 +625,9 @@ def run_repricing_queue() -> int:
     print(
         "Repricing abgeschlossen: "
         f"{result.checked} geprüft, {result.improved} verbessert, {result.live_rechecks} live geprüft, "
-        f"{result.expired} beendet, {len(result.secondary)} sekundär entdeckt, "
-        f"{len(repriced_hits)} Hits, {result.calls} eBay-Calls."
+        f"{result.expired} beendet, {result.live_errors} Live-Fehler, "
+        f"{len(result.secondary)} sekundär entdeckt, {len(repriced_hits)} Hits, "
+        f"{result.calls} eBay-Calls."
     )
     return 0
 

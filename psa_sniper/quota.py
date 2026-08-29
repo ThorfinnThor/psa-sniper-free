@@ -33,6 +33,34 @@ def _rolling_calls(state: dict, hours: int = 24) -> int:
     return total
 
 
+def allocate_call_budgets(allowed: int, settings: dict) -> dict[str, int]:
+    allowed = max(0, int(allowed))
+    search = min(max(0, int(settings.get("max_search_calls_per_run", 24))), allowed)
+    remaining = max(0, allowed - search)
+
+    # Bei vollem 575er-Budget ergeben die Caps weiterhin 80 Markt- + 60
+    # Repricing-Calls. Unter Quotendruck werden Wartungspfade proportional
+    # reduziert, damit Discovery-Details nicht komplett verhungern.
+    market = min(
+        max(0, int(settings.get("max_market_comp_calls_per_run", 80))),
+        max(0, round(remaining * 0.18)),
+    )
+    reprice = min(
+        max(0, int(settings.get("max_reprice_comp_calls_per_run", 60))),
+        max(0, round(remaining * 0.12)),
+    )
+    detail = min(
+        max(0, int(settings.get("max_detail_calls_per_run", 470))),
+        max(0, remaining - market - reprice),
+    )
+    return {
+        "search": search,
+        "detail": detail,
+        "market": market,
+        "reprice": reprice,
+    }
+
+
 def _merge_override(values: dict[str, int]) -> None:
     raw = os.getenv("SETTINGS_OVERRIDE_JSON", "").strip()
     current: dict = {}
@@ -92,19 +120,14 @@ def prepare_scan_quota() -> QuotaDecision:
             note=f"eBay-Budget zu niedrig ({allowed} sichere Calls; Quelle: {source})",
         )
 
-    search_calls = int(settings.get("max_search_calls_per_run", 24))
-    market_budget = min(int(settings.get("max_market_comp_calls_per_run", 80)), max(8, allowed // 4))
-    reprice_budget = min(int(settings.get("max_reprice_comp_calls_per_run", 60)), max(4, allowed // 6))
-    detail_budget = min(
-        int(settings.get("max_detail_calls_per_run", 470)),
-        max(0, allowed - search_calls - max(market_budget, reprice_budget)),
-    )
+    budgets = allocate_call_budgets(allowed, settings)
     _merge_override(
         {
             "max_ebay_calls_per_run": allowed,
-            "max_detail_calls_per_run": detail_budget,
-            "max_market_comp_calls_per_run": market_budget,
-            "max_reprice_comp_calls_per_run": reprice_budget,
+            "max_search_calls_per_run": budgets["search"],
+            "max_detail_calls_per_run": budgets["detail"],
+            "max_market_comp_calls_per_run": budgets["market"],
+            "max_reprice_comp_calls_per_run": budgets["reprice"],
         }
     )
     return QuotaDecision(

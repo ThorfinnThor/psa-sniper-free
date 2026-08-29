@@ -229,3 +229,24 @@ def test_active_ebay_comps_can_verify_large_discount():
     )
     assert hit.price_status == "verified_edge"
     assert hit.score >= 11
+
+
+def test_population_without_confirmed_psa10_grade_gets_no_low_pop_bonus():
+    cert = _cert()
+    cert.grade = None
+    cert.population = 1
+    listing = Listing(
+        item_id="no-grade", title="2021 Bundesliga PSA 10 #16",
+        url="https://example.test/no-grade", price=Money(40, "EUR"),
+        created_at=datetime.now(timezone.utc), buying_options=["FIXED_PRICE"],
+    )
+    hit = score_hit(
+        listing, cert_number=cert.cert_number, cert_source="Item-Specifics",
+        cert=cert, market_value_listing_currency=None,
+        priority_terms=[], demand_terms=[],
+    )
+    assert not any(
+        "niedrige PSA-10-Population" in reason
+        or "sehr niedrige PSA-10-Population" in reason
+        for reason in hit.reasons
+    )

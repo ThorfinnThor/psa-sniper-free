@@ -219,7 +219,7 @@ def score_hit(
             adjust(0, label)
             reasons.append(label)
 
-    if cert and cert_trusted and cert.population is not None:
+    if cert and cert_trusted and is_psa10(cert.grade) and cert.population is not None:
         pop = cert.population
         if pop <= 3:
             label, points = f"sehr niedrige PSA-10-Population: {pop}", 5

@@ -22,8 +22,11 @@ def _float_or_none(value: Any) -> float | None:
 
 
 def _infer_price_status(row: dict[str, Any]) -> str:
-    if str(row.get("availability_status") or "active") in {"ended", "unavailable"}:
+    availability = str(row.get("availability_status") or "active")
+    if availability in {"ended", "unavailable"}:
         return "unavailable"
+    if availability == "check_failed":
+        return "live_check_failed"
     existing = str(row.get("price_status") or "").strip()
     if existing:
         return existing
@@ -200,7 +203,7 @@ function renderCoverage() {
     ['eBay Comp-Suchen', values.eBayCompSuche ?? '–', `${values.eBayCompPreis ?? 0} brauchbare Comp-Preis(e)`],
     ['Preisvorteil bestätigt', values.Edge ?? '–', 'je Preisquelle erforderliches Gate erfüllt'],
     ['Repricing', run?.repricing_checked ?? 0, `${run?.repricing_improved ?? 0} Quelle(n) verbessert`],
-    ['Live-Rechecks', run?.repricing_live_rechecks ?? 0, `${run?.repricing_expired ?? 0} beendet / nicht verfügbar`],
+    ['Live-Rechecks', run?.repricing_live_rechecks ?? 0, `${run?.repricing_expired ?? 0} beendet · ${run?.repricing_live_errors ?? 0} temporäre Fehler`],
     ['Sekundär entdeckt', run?.secondary_candidates ?? 0, 'ältere Fehlpreise aus Leave-One-Out-Comps'],
     ['Calls gesamt', run?.total_ebay_calls ?? run?.ebay_calls ?? '–', `davon ${run?.repricing_calls ?? 0} Repricing`],
   ];
@@ -314,6 +317,9 @@ def _apply_dashboard_ui_defaults(output_dir: Path) -> None:
             "  if (status === 'auction') {",
             "  if (status === 'unavailable') {\n"
             "    return { tone: 'bad', title: 'Nicht mehr verfügbar', text: 'Das Zielangebot wurde live geprüft und ist beendet oder nicht mehr kaufbar.' };\n"
+            "  }\n"
+            "  if (status === 'live_check_failed') {\n"
+            "    return { tone: 'warn', title: 'Live-Recheck fehlgeschlagen', text: 'Der letzte Verfügbarkeitscheck war vorübergehend nicht möglich. Bis zur nächsten erfolgreichen Prüfung ist dies ausdrücklich kein Kauf-Hit.' };\n"
             "  }\n"
             "  if (status === 'auction') {",
             "Verfügbarkeitsstatus",
