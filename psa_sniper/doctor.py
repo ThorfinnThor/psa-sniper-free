@@ -9,6 +9,7 @@ from datetime import timedelta
 from .config import load_queries, load_settings
 from .ebay import EbayClient, EbayError
 from .ocr import ocr_enabled
+from .point130 import load_point130_sales
 from .psa_auth import normalize_psa_access_token
 from .util import utc_now
 
@@ -97,6 +98,29 @@ def run_doctor(live: bool = False) -> tuple[list[Check], bool]:
         checks.append(Check("INFO", "PSA API", "kein Token; öffentliche Cert-Seite als Best-Effort-Fallback"))
     else:
         checks.append(Check("WARNUNG", "PSA API", "kein Token und Web-Fallback deaktiviert"))
+
+    try:
+        point130_sales = load_point130_sales()
+    except (OSError, ValueError, TypeError) as exc:
+        checks.append(Check("FEHLER", "130point Sold-Comps", str(exc)))
+        ok = False
+    else:
+        if point130_sales:
+            checks.append(
+                Check(
+                    "OK",
+                    "130point Sold-Comps",
+                    f"{len(point130_sales)} manuell verifizierte PSA-10-Verkäufe geladen",
+                )
+            )
+        else:
+            checks.append(
+                Check(
+                    "INFO",
+                    "130point Sold-Comps",
+                    "noch keine Verkäufe importiert; automatische Abfrage bleibt deaktiviert",
+                )
+            )
 
     if live and client_id and client_secret:
         try:

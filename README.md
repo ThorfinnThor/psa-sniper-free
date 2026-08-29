@@ -43,6 +43,7 @@ Die GUI bietet:
 - direkte Schaltfläche zu Beobachtungen, wenn ein manuell gewählter Kauf-Hit-Filter leer ist,
 - Sortierung nach Aktualität, Score, POP, Preis und Preisabstand,
 - Kartenbild, eBay-Link, PSA-Link, Preis, Versand, POP, Score-Gründe und Warnungen,
+- 130point-Sold-Suche mit automatisch kopiertem exakten PSA-10-Suchtext,
 - Verkäuferdaten und Listing-Alter,
 - Historie der letzten Scanner-Läufe,
 - lokale Markierungen `Merken`, `Gekauft` und `Ausblenden`.
@@ -95,6 +96,7 @@ Verwende **keine Sandbox-Keys** für echte Listings. Teile die Keys und das Dash
 | `SEARCH_CONFIG_JSON` | hält deine echten Suchbegriffe trotz öffentlichem Repo geheim |
 | `SETTINGS_OVERRIDE_JSON` | überschreibt einzelne Scanner-Einstellungen ohne Commit |
 | `PSA_ACCESS_TOKEN` | bevorzugt die offizielle PSA Public API vor dem Web-Fallback; reiner Token oder kopierter `Authorization: Bearer …`-Wert |
+| `POINT130_SOLD_COMPS_JSON` | manuell auf 130point verifizierte, tatsächlich verkaufte PSA-10-Comps; Schema siehe unten |
 | `TELEGRAM_BOT_TOKEN` | Telegram-Alerts |
 | `TELEGRAM_CHAT_ID` | Zielchat für Telegram-Alerts |
 | `DISCORD_WEBHOOK_URL` | Discord-Alerts |
@@ -198,6 +200,28 @@ Beispiel für `SETTINGS_OVERRIDE_JSON`:
 
 Das Secret überschreibt nur die angegebenen Werte aus `config/settings.json`.
 
+## Echte PSA-10-Verkäufe von 130point
+
+Rohkartenpreise von Cardmarket oder TCGplayer werden bewusst **nicht** als PSA-10-Marktwert verwendet. Stattdessen kann der Scanner echte, auf 130point geprüfte Verkäufe importieren. Ein passender Button im Dashboard öffnet die Sold-Suche und kopiert den präzisen Suchtext für die jeweilige Karte.
+
+130point untersagt in seinen Nutzungsbedingungen die automatisierte Nutzung der Plattform. Der Scanner scrapt die Seite deshalb nicht. Die verifizierten Ergebnisse werden als einzeiliges JSON im Secret `POINT130_SOLD_COMPS_JSON` hinterlegt. Lokal kann alternativ `config/130point_sold_comps.json` verwendet werden; diese Datei wird von Git ignoriert. Eine Vorlage steht in `config/130point_sold_comps.example.json`.
+
+```json
+{"version":1,"sales":[{"id":"mew-039-2026-08-10","title":"Pokemon 2021 Japanese S8 Fusion Arts Mew V 039/100 Holo PSA 10","price":{"value":52.0,"currency":"USD"},"sold_at":"2026-08-10T23:52:14Z","source_url":"https://130point.com/search?new=sold","marketplace":"eBay"}]}
+```
+
+Dabei gilt:
+
+- Preis ist der tatsächliche Verkaufspreis beziehungsweise akzeptierte Best-Offer-Preis, nicht der gestrichene ursprüngliche Angebotspreis.
+- Kartennummer, Subject, Sprache, bekannte Variante und PSA 10 müssen zur Zielkarte passen; ein fehlender Setcode ist nur bei vollständigen Nummern wie `039/100` zulässig, ein widersprüchlicher Setcode nie.
+- Ein Verkauf bleibt ein schwacher Hinweis.
+- Zwei kohärente Verkäufe ergeben mittleres Vertrauen und verlangen mindestens 15 % Preisvorteil.
+- Ab drei kohärenten Verkäufen ist hohes Vertrauen möglich.
+- Verkäufe älter als 365 Tage werden standardmäßig ignoriert.
+- Aktive eBay-Angebote werden bei gleicher Qualitätsstufe von echten 130point-Sold-Comps verdrängt.
+
+Die Importgrenze ist absichtlich streng: Ein falscher PSA-10-Marktwert ist gefährlicher als ein weiterhin fehlender Preis.
+
 ---
 
 # Kosten- und API-Budget
@@ -225,7 +249,7 @@ Vergleichspreise werden nicht mehr in Discovery-Reihenfolge gesucht. Zuerst läd
 
 Wenn ein rechnerisch interessanter Markt nur deshalb schwach bleibt, weil eBays Suchzusammenfassungen Sprache, Set, Variante oder Verkäufer nicht vollständig enthalten, lädt der Scanner für die bestpriorisierten Fälle bis zu drei vollständige Comp-Datensätze nach. Explizit widersprüchliche Karten werden dabei nicht angereichert. Suchseiten, Comp-Details, Discovery-Details und Repricing besitzen getrennte Quota-Pools und bleiben gemeinsam unter der harten Laufgrenze.
 
-Das Dashboard zeigt bei schwachen Preisquellen nicht mehr nur einen Sammelhinweis, sondern nennt pro Karte Stichprobengröße, unabhängige Verkäufer, Preisstreuung und den Status der Listing-Identität.
+Das Dashboard zeigt bei schwachen Preisquellen nicht mehr nur einen Sammelhinweis, sondern nennt pro Karte Stichprobengröße, unabhängige Verkäufer, Preisstreuung und den Status der Listing-Identität. Bei 130point-Sold-Comps wird die Anzahl tatsächlich verifizierter Verkäufe getrennt ausgewiesen.
 
 Bei mindestens fünf exakten aktiven Comps entfernt eine konservative IQR-Prüfung extreme Preisausreißer. Preisanker, Stichprobengröße, Verkäuferzahl und Streuung werden anschließend aus derselben bereinigten Stichprobe berechnet. Ein einzelnes offensichtlich extremes Angebot kann die Qualitätsstufe daher nicht mehr künstlich herabsetzen; kleine oder tatsächlich uneinheitliche Märkte bleiben weiterhin schwach.
 

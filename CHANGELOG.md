@@ -28,3 +28,7 @@
 - erhöhtes und weiterhin hart gedeckeltes Comp-/Repricing-Budget
 - kartenspezifische Preisqualitäts-Erklärung mit Comp-, Verkäufer- und Streuungswerten
 - Ruff-Prüfung für den Produktionscode in CI und Live-Workflow
+- streng validierter Import echter, datierter 130point-PSA-10-Verkäufe
+- 130point-Sold-Comps in Scan, Repricing, Coverage und Preisquellen-Priorität
+- Dashboard-Schaltfläche mit kartenspezifischem, automatisch kopiertem 130point-Suchtext
+- bewusster Ausschluss von Rohkartenpreisen als PSA-10-Preisquelle

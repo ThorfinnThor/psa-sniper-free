@@ -29,6 +29,7 @@ from .market import (
 )
 from .models import CertCandidate, Listing, MarketValue, Money, PSACertInfo, ScoredHit
 from .notify import configured_channels, notify
+from .point130 import Point130Sale, load_point130_sales, point130_market_for_identity
 from .scoring import identity_overlap, is_psa10, score_hit
 from .state import (
     cert_from_dict,
@@ -60,6 +61,7 @@ class RepriceResult:
     budget_stops: int = 0
     comp_detail_calls: int = 0
     comp_detail_errors: int = 0
+    point130_matches: int = 0
     secondary: list[ScoredHit] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
@@ -158,7 +160,13 @@ def _market_key(market: MarketValue | None) -> tuple[int, int, int, int]:
     if market is None:
         return (0, 0, 0, 0)
     confidence_rank = {"hoch": 3, "mittel": 2, "niedrig": 1}
-    source_rank = {"psa_sales": 4, "ebay_active": 3, "ebay_active_provisional": 2, "psa_estimate": 1}
+    source_rank = {
+        "point130_sold": 5,
+        "psa_sales": 4,
+        "ebay_active": 3,
+        "ebay_active_provisional": 2,
+        "psa_estimate": 1,
+    }
     return (
         confidence_rank.get(market.confidence.casefold(), 0),
         source_rank.get(market.market_type, 0),
@@ -209,6 +217,8 @@ def _refresh_minutes(row: dict[str, Any], settings: dict[str, Any]) -> int:
     if market_type == "ebay_active":
         return 8 * 60
     if market_type == "psa_sales":
+        return 24 * 60
+    if market_type == "point130_sold":
         return 24 * 60
     return 6 * 60
 
@@ -408,6 +418,7 @@ def reprice_state(
     fx: FXRates,
     *,
     max_comp_calls: int,
+    point130_sales: list[Point130Sale] | None = None,
 ) -> RepriceResult:
     result = RepriceResult()
     if max_comp_calls <= 0:
@@ -424,6 +435,7 @@ def reprice_state(
         int(settings.get("max_reprice_comp_details_per_candidate", 3)),
     )
     history = list(state.get("history", []))
+    imported_sales = point130_sales or []
 
     for index, old in _due_history_rows(state, settings):
         if not _budget_left(ebay, start_calls, max_comp_calls):
@@ -476,6 +488,20 @@ def reprice_state(
         force_refresh = str(old.get("price_status") or "") in REFRESHABLE_PRICE_STATUSES
         cert_comp_rows: list[Listing] = []
         cert_values: list[Money] = []
+        identity = pricing_identity_from_dict(old.get("pricing_identity")) or listing_comp_identity(listing)
+
+        if target and imported_sales and identity:
+            point130_market = point130_market_for_identity(
+                imported_sales,
+                identity,
+                target_currency=target.currency,
+                fx=fx,
+                max_age_days=int(settings.get("point130_sold_max_age_days", 365)),
+                required_edge=float(settings.get("point130_sold_required_edge", 0.12)),
+            )
+            if point130_market is not None:
+                result.point130_matches += 1
+                market = _prefer_market(market, point130_market)
 
         if (
             target
@@ -518,7 +544,6 @@ def reprice_state(
             and (market is None or market.confidence.casefold() == "niedrig")
             and _budget_left(ebay, start_calls, max_comp_calls)
         ):
-            identity = pricing_identity_from_dict(old.get("pricing_identity")) or listing_comp_identity(listing)
             if identity:
                 fingerprint = f"{listing_comp_fingerprint(identity)}|{target.currency.upper()}"
                 cached, cached_market = get_cached_market(state, fingerprint, int(settings.get("market_cache_hours", 8)))
@@ -604,6 +629,7 @@ def _append_summary(result: RepriceResult, hit_count: int) -> None:
             f"{result.checked} geprüft, {result.improved} Preisquelle(n) verbessert, "
             f"{result.live_rechecks} live geprüft, {result.expired} beendet, "
             f"{result.live_errors} Live-Fehler, {len(result.secondary)} sekundär entdeckt, "
+            f"{result.point130_matches} 130point-Matches, "
             f"{result.comp_detail_calls} Comp-Details, {result.comp_detail_errors} Detailfehler, "
             f"{hit_count} Kauf-Hit(s), "
             f"{result.calls} zusätzliche eBay-Calls.\n"
@@ -639,7 +665,15 @@ def run_repricing_queue() -> int:
     )
     fx = FXRates()
     fx.refresh()
-    result = reprice_state(state, settings, ebay, fx, max_comp_calls=queue_limit)
+    point130_sales = load_point130_sales()
+    result = reprice_state(
+        state,
+        settings,
+        ebay,
+        fx,
+        max_comp_calls=queue_limit,
+        point130_sales=point130_sales,
+    )
     if result.checked <= 0 and not result.secondary:
         return 0
 
@@ -672,6 +706,7 @@ def run_repricing_queue() -> int:
         latest["repricing_budget_stops"] = result.budget_stops
         latest["repricing_comp_detail_calls"] = result.comp_detail_calls
         latest["repricing_comp_detail_errors"] = result.comp_detail_errors
+        latest["repricing_point130_matches"] = result.point130_matches
         latest["secondary_candidates"] = len(result.secondary)
         latest["total_ebay_calls"] = previous_calls + result.calls
         notes = list(latest.get("notes") or [])
@@ -681,6 +716,7 @@ def run_repricing_queue() -> int:
             f"geprüft={result.checked}; verbessert={result.improved}; live={result.live_rechecks}; "
             f"beendet={result.expired}; LiveFehler={result.live_errors}; "
             f"CompDetails={result.comp_detail_calls}; Detailfehler={result.comp_detail_errors}; "
+            f"130point={result.point130_matches}; "
             f"sekundär={len(result.secondary)}; Hits={len(repriced_hits)}; "
             f"eBayCalls={result.calls}"
         )
@@ -697,6 +733,7 @@ def run_repricing_queue() -> int:
         f"{result.checked} geprüft, {result.improved} verbessert, {result.live_rechecks} live geprüft, "
         f"{result.expired} beendet, {result.live_errors} Live-Fehler, "
         f"{result.comp_detail_calls} Comp-Details, {result.comp_detail_errors} Detailfehler, "
+        f"{result.point130_matches} 130point-Matches, "
         f"{len(result.secondary)} sekundär entdeckt, {len(repriced_hits)} Hits, "
         f"{result.calls} eBay-Calls."
     )

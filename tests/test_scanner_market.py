@@ -53,6 +53,12 @@ def test_psa_sales_are_not_replaced_by_active_asking_prices():
     assert _prefer_market_value(sales, comps) is sales
 
 
+def test_exact_130point_sold_market_outranks_active_asking_prices():
+    sold = market(500, "130point verkaufte PSA-10-Comps", "mittel", 2, "point130_sold")
+    active = market(520, "eBay aktive PSA-10-Vergleichsangebote", "mittel", 8, "ebay_active")
+    assert _prefer_market_value(active, sold) is sold
+
+
 def test_price_gap_diagnoses_identity_and_search_losses():
     assert _classify_price_gap(
         None, target_available=True, preliminary=8, min_preliminary=7,

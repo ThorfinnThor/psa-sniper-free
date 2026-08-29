@@ -97,7 +97,7 @@ def demo_state() -> dict[str, Any]:
             "score": 13,
             "is_hit": True,
             "reasons": ["PSA-Cert bestätigt GEM MT 10", "sehr niedrige PSA-10-Population: 2", "Variante/Parallel fehlt im Titel"],
-            "warnings": ["Preisvergleich basiert nur auf PSA Estimate, nicht auf mehreren Sales"],
+            "warnings": [],
             "cert_number": "87654321",
             "cert_source": "Item-Specifics",
             "cert_confidence": 1.0,
@@ -109,7 +109,18 @@ def demo_state() -> dict[str, Any]:
                 "population": 2, "population_higher": 0, "estimate": {"value": 80, "currency": "EUR"},
                 "recent_sales": [], "source_url": "https://www.psacard.com/", "data_source": "Demo"
             },
-            "market_value": {"money": {"value": 80, "currency": "EUR"}, "source": "PSA Estimate", "confidence": "niedrig", "sample_size": 0},
+            "pricing_identity": {
+                "version": 2, "card_number": "16", "subjects": ["taiwo", "awoniyi"],
+                "terms": ["taiwo", "awoniyi"], "year": "2020", "set_code": None,
+                "language": None, "edition": None, "variant": "REFRACTOR",
+            },
+            "point130_query": "taiwo awoniyi 16 PSA 10",
+            "market_value": {
+                "money": {"value": 80, "currency": "EUR"},
+                "source": "130point verkaufte PSA-10-Comps", "confidence": "mittel",
+                "sample_size": 2, "market_type": "point130_sold", "required_edge": 0.15,
+                "price_low": 76, "price_high": 84, "dispersion": 0.10,
+            },
             "discount_pct": 0.425,
         },
         {

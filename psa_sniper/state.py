@@ -6,7 +6,11 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from .identity import pricing_identity_from_listing, pricing_identity_to_dict
+from .identity import (
+    build_identity_queries,
+    pricing_identity_from_listing,
+    pricing_identity_to_dict,
+)
 from .models import MarketValue, Money, PSACertInfo, RunStats, ScoredHit
 from .util import iso_z, parse_iso_datetime, utc_now
 
@@ -446,6 +450,8 @@ def put_cached_market(
 def hit_to_record(hit: ScoredHit, threshold: int) -> dict[str, Any]:
     listing = hit.listing
     now = iso_z(utc_now())
+    pricing_identity = pricing_identity_from_listing(listing, hit.cert)
+    point130_queries = build_identity_queries(pricing_identity) if pricing_identity else []
     return {
         "item_id": listing.item_id,
         "title": listing.title,
@@ -476,7 +482,8 @@ def hit_to_record(hit: ScoredHit, threshold: int) -> dict[str, Any]:
         "cert_confidence": hit.cert_confidence,
         "cert_trusted": hit.cert_trusted,
         "cert": _cert_dict(hit.cert),
-        "pricing_identity": pricing_identity_to_dict(pricing_identity_from_listing(listing, hit.cert)),
+        "pricing_identity": pricing_identity_to_dict(pricing_identity),
+        "point130_query": point130_queries[0] if point130_queries else None,
         "market_value": _market_dict(hit.market_value),
         "discount_pct": hit.discount_pct,
         "availability_status": "active",

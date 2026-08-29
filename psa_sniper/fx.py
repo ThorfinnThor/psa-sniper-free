@@ -11,7 +11,7 @@ from .models import Money
 
 ECB_URL = (
     "https://data-api.ecb.europa.eu/service/data/EXR/"
-    "D.USD+GBP+JPY+CHF.EUR.SP00.A?lastNObservations=1&format=csvdata"
+    "D.USD+GBP+JPY+CHF+AUD+CAD.EUR.SP00.A?lastNObservations=1&format=csvdata"
 )
 
 

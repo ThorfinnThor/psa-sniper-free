@@ -53,9 +53,11 @@ Deshalb kombiniert der Scanner POP mit Kartenalter, Titellücke, Nachfragehinwei
 
 ## Preisvertrauen
 
-- **hoch:** Median aus mindestens drei sichtbaren ähnlichen Verkäufen derselben Währung.
-- **mittel:** ein oder zwei sichtbare ähnliche Verkäufe.
-- **niedrig:** nur PSA Estimate.
+- **hoch:** mindestens drei kohärente, exakt passende und manuell auf 130point verifizierte PSA-10-Verkäufe.
+- **mittel:** mindestens zwei kohärente 130point-PSA-10-Verkäufe oder eine ausreichend unabhängige und vollständige aktive eBay-Comp-Stichprobe.
+- **niedrig:** nur ein 130point-Verkauf, unvollständige/streuende aktive Comps oder nur ein PSA Estimate.
+
+130point-Sold-Comps haben bei gleicher Vertrauensstufe Vorrang vor aktiven Angebotspreisen. Kartennummer, Subject, Sprache, PSA 10 und bekannte Varianten müssen übereinstimmen. Ein fehlender Setcode wird nur bei vollständigen Nummern wie `039/100` toleriert; explizite Konflikte werden immer verworfen. Der Scanner fragt 130point nicht automatisiert ab.
 
 Je schwächer die Quelle, desto weniger Score kann ein Preisabstand erzeugen. Versand wird in die Gesamtkosten einbezogen. Einfuhrabgaben und Steuern sind nicht automatisch vollständig kalkuliert.
 

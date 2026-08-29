@@ -21,6 +21,8 @@
   "market_cache_hours": 8,
   "market_active_required_edge": 0.2,
   "market_listing_fallback_min_preliminary_score": 7,
+  "point130_sold_max_age_days": 365,
+  "point130_sold_required_edge": 0.12,
   "import_risk_extra_edge": 0.15,
   "unknown_shipping_extra_edge": 0.10,
   "import_risk_exempt_countries": [

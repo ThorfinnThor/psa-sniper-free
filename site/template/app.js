@@ -312,6 +312,10 @@ function weakPriceExplanation(row) {
     facts.push(sellers === 1 ? '1 unabhängiger Verkäufer' : `${sellers} unabhängige Verkäufer`);
   }
   if (Number.isFinite(dispersion)) facts.push(`Streuung ${percent(dispersion)}`);
+  if (market.market_type === 'point130_sold') {
+    const evidence = facts.length ? ` ${facts.join(' · ')}.` : '';
+    return `Preisquelle: ${source}.${evidence} Berücksichtigt werden ausschließlich manuell verifizierte, exakt passende PSA-10-Verkäufe. Für ein Kaufurteil werden mindestens zwei kohärente Verkäufe benötigt.`;
+  }
   if (market.market_type === 'ebay_active_provisional') {
     facts.push('Identität nur aus Listingdaten bestätigt');
   }
@@ -439,7 +443,19 @@ function renderCard(row) {
     else state.expanded.add(row.item_id);
     renderAll();
   });
-  actions.append(ebay, more);
+  actions.append(ebay);
+  if (row.point130_query) {
+    const point130 = el('a', 'more-button', '130point Sold prüfen');
+    point130.href = 'https://130point.com/search?new=sold';
+    point130.target = '_blank';
+    point130.rel = 'noopener noreferrer';
+    point130.title = `Suchtext wird kopiert: ${row.point130_query}`;
+    point130.addEventListener('click', () => {
+      navigator.clipboard?.writeText(row.point130_query).catch(() => {});
+    });
+    actions.append(point130);
+  }
+  actions.append(more);
   content.append(actions, statusButtons(row));
 
   if (state.expanded.has(row.item_id)) content.append(renderDetails(row));
@@ -511,6 +527,7 @@ function renderDetails(row) {
     row.shipping ? `Preis ${money(row.price)} + Versand ${money(row.shipping)}` : `Preis: ${money(row.price)}`,
     row.returns_accepted == null ? 'Rückgabe: unbekannt' : `Rückgabe: ${row.returns_accepted ? 'akzeptiert' : 'nicht akzeptiert'}`,
     row.matched_queries?.length ? `Gefunden über ${row.matched_queries.length} Suchabfrage(n)` : null,
+    row.point130_query ? `130point-Suchtext: ${row.point130_query}` : null,
   ].filter(Boolean);
   lines.forEach(line => box.append(el('div', '', line)));
   box.append(renderScoreBreakdown(row));

@@ -29,6 +29,8 @@ Beide Punkte werden durch Diagnose, Workflow-Fehlertexte und Troubleshooting ein
 - gezielte Voll-Detail-Anreicherung für unvollständige eBay-Comp-Summaries,
 - getrennte Quota-Pools für Comp-Suchen und Comp-Details,
 - konkrete Preisquellen-Diagnose direkt auf jeder Dashboard-Karte,
+- exakte 130point-Sold-Comp-Prüfung mit Datum, Währung, Deduplizierung und strikter PSA-10-Identität,
+- keine Verwendung von Cardmarket-/TCGplayer-Rohkartenpreisen als PSA-10-Marktwert,
 - PSA-Token-Normalisierung für rohe Tokens, Bearer-Werte und Authorization-Header,
 - Versandkosten in den Gesamtkosten,
 - reine Auktionen standardmäßig ausgeschlossen,
@@ -49,7 +51,7 @@ Beide Punkte werden durch Diagnose, Workflow-Fehlertexte und Troubleshooting ein
 
 | Prüfung | Ergebnis |
 |---|---|
-| Python Unit Tests | 117 bestanden |
+| Python Unit Tests | 128 bestanden |
 | Ruff Produktionscode | bestanden |
 | Python `compileall` | bestanden |
 | JavaScript Syntaxcheck | bestanden |
@@ -63,6 +65,8 @@ Beide Punkte werden durch Diagnose, Workflow-Fehlertexte und Troubleshooting ein
 | Dashboard ohne horizontales Overflow bei 1280, 1024 und 390 px | bestanden |
 | Fehlende Comp-Sprache durch vollständige eBay-Details sicher ergänzt | bestanden |
 | Explizit widersprüchliche Comp-Identitäten nicht angereichert | bestanden |
+| Falsche oder unvollständige 130point-PSA-10-Identitäten verworfen | bestanden |
+| Zwei 130point-Verkäufe ergeben mittleren, drei Verkäufe hohen Preisquellen-Rang | bestanden |
 | Suche filtert Demo-Hits | bestanden |
 | lokale Statusaktion | bestanden |
 | verschlüsselter Git-State persistieren/wiederherstellen | bestanden |
@@ -81,6 +85,7 @@ Folgende Punkte wurden bewusst nicht als „getestet“ bezeichnet:
 ## Verbleibende Datenlimits
 
 - vollständige Gem Rate ist ohne vollständige Grade-Verteilung nicht zuverlässig verfügbar,
+- 130point-Sold-Daten werden wegen des Verbots automatisierter Nutzung nur kontrolliert importiert,
 - kostenlose historische eBay-Sold-Daten sind nicht allgemein über die Browse API verfügbar,
 - PSA Estimate und sichtbare ähnliche Verkäufe sind Preisindikatoren, keine Garantie,
 - OCR und öffentlicher PSA-Web-Fallback bleiben Best Effort,

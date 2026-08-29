@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "sales": [
+    {
+      "id": "example-mew-039-2026-08-10",
+      "title": "Pokemon 2021 Japanese S8 Fusion Arts Mew V 039/100 Holo PSA 10",
+      "price": {
+        "value": 52.0,
+        "currency": "USD"
+      },
+      "sold_at": "2026-08-10T23:52:14Z",
+      "source_url": "https://130point.com/search?new=sold",
+      "marketplace": "eBay"
+    }
+  ]
+}

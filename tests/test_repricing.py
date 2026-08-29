@@ -1,6 +1,7 @@
 from datetime import timedelta
 
 from psa_sniper.models import Listing, MarketValue, Money
+from psa_sniper.point130 import parse_point130_sales
 from psa_sniper.repricing import _prefer_market, listing_from_history, reprice_state
 from psa_sniper.state import default_state
 from psa_sniper.util import iso_z, utc_now
@@ -166,6 +167,43 @@ def test_repricing_live_refresh_upgrades_psa_estimate_to_independent_ebay_market
     assert updated["availability_checked_at"]
     assert updated["price_check_attempts"] == 1
     assert updated["pricing_identity"]
+
+
+def test_repricing_prefers_exact_130point_sold_comps_without_active_comp_search():
+    state = default_state()
+    state["history"] = [weak_row()]
+    sold_at = iso_z(utc_now() - timedelta(days=10))
+    sales = parse_point130_sales({
+        "sales": [
+            {
+                "id": sale_id,
+                "title": "2025 Pokemon Elfun EX 165 German PSA 10",
+                "price": {"value": value, "currency": "EUR"},
+                "sold_at": sold_at,
+                "source_url": "https://130point.com/search?new=sold",
+            }
+            for sale_id, value in (("a", 130), ("b", 140), ("c", 150))
+        ]
+    })
+    ebay = FakeEbay([])
+
+    result = reprice_state(
+        state,
+        settings(),
+        ebay,
+        IdentityFX(),
+        max_comp_calls=6,
+        point130_sales=sales,
+    )
+
+    assert result.point130_matches == 1
+    assert result.improved == 1
+    assert result.calls == 1
+    assert ebay.queries == []
+    updated = state["history"][0]
+    assert updated["market_value"]["market_type"] == "point130_sold"
+    assert updated["market_value"]["confidence"] == "hoch"
+    assert updated["price_status"] == "verified_edge"
 
 
 def test_repricing_backoff_skips_recent_price_check():

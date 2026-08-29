@@ -18,3 +18,9 @@ def test_import_risk_defaults_are_conservative_for_german_buyer():
 def test_unknown_shipping_has_nonzero_safety_margin():
     settings = json.loads(Path("config/settings.json").read_text(encoding="utf-8"))
     assert settings["unknown_shipping_extra_edge"] >= .05
+
+
+def test_130point_sold_defaults_require_recent_conservative_psa10_evidence():
+    settings = json.loads(Path("config/settings.json").read_text(encoding="utf-8"))
+    assert 90 <= settings["point130_sold_max_age_days"] <= 365
+    assert settings["point130_sold_required_edge"] >= .10

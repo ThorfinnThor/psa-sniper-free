@@ -10,6 +10,7 @@ from .cert_extract import extract_cert_from_aspects, extract_cert_from_title, gr
 from .config import load_queries, load_settings, state_path
 from .ebay import EbayBudgetExceeded, EbayClient, EbayError
 from .fx import FXRates
+from .identity import pricing_identity_from_listing
 from .listing_market import (
     ListingCompIdentity,
     build_listing_comp_queries,
@@ -30,6 +31,7 @@ from .market import (
 from .models import CertCandidate, Listing, MarketValue, PSACertInfo, RunStats, ScoredHit
 from .notify import configured_channels, notify
 from .ocr import extract_cert_from_images, ocr_enabled
+from .point130 import load_point130_sales, point130_market_for_identity
 from .psa import PSABudgetExceeded, PSAClient, cert_needs_api_upgrade, merge_cert_info
 from .psa_auth import normalize_psa_access_token
 from .report import write_reports
@@ -128,7 +130,13 @@ def _prefer_market_value(current: MarketValue | None, candidate: MarketValue | N
     if current is None:
         return candidate
     confidence_rank = {"hoch": 3, "mittel": 2, "niedrig": 1}
-    source_rank = {"psa_sales": 4, "ebay_active": 3, "ebay_active_provisional": 2, "psa_estimate": 1}
+    source_rank = {
+        "point130_sold": 5,
+        "psa_sales": 4,
+        "ebay_active": 3,
+        "ebay_active_provisional": 2,
+        "psa_estimate": 1,
+    }
     current_key = (
         confidence_rank.get(current.confidence.casefold(), 0),
         source_rank.get(current.market_type, 0),
@@ -237,6 +245,12 @@ def _weak_market_diagnostics(market: MarketValue | None) -> list[str]:
     keys = ["Schwach"]
     if market.market_type == "psa_estimate":
         keys.append("SchwachPSAEstimate")
+        return keys
+    if market.market_type == "point130_sold":
+        if int(market.sample_size or 0) < 2:
+            keys.append("SchwachComps")
+        if market.dispersion is not None and float(market.dispersion) > 0.45:
+            keys.append("SchwachStreuung")
         return keys
     if market.market_type not in {"ebay_active", "ebay_active_provisional"}:
         return keys
@@ -583,6 +597,7 @@ def run_scan() -> int:
 
     fx = FXRates()
     fx.refresh()
+    point130_sales = load_point130_sales()
     window_minutes = int(settings.get("run_window_minutes", 75))
     started_after = utc_now() - timedelta(minutes=window_minutes)
     summaries: dict[str, Listing] = {}
@@ -662,6 +677,7 @@ def run_scan() -> int:
     psa_market_web_calls = 0
     psa_market_web_min_prelim = int(settings.get("psa_market_web_min_preliminary_score", 8))
     psa_cache_upgrades = 0
+    point130_matches = 0
     price_diag = _new_price_diagnostics()
     demand_terms = list(settings.get("demand_terms") or [])
 
@@ -731,11 +747,27 @@ def run_scan() -> int:
                     cached, cached_market = get_cached_market(state, fingerprint, market_cache_hours)
                     if cached and cached_market is not None:
                         market = _prefer_market_value(market, cached_market)
-        identity = (
+        base_listing_identity = (
             listing_comp_identity(listing)
-            if _market_needs_upgrade(market) and prelim >= listing_market_min_prelim
+            if prelim >= listing_market_min_prelim
             else None
         )
+        point130_identity = base_listing_identity
+        if cert_market_safe and cert and cert.valid and is_psa10(cert.grade):
+            point130_identity = pricing_identity_from_listing(listing, cert) or point130_identity
+        if target and point130_sales and point130_identity:
+            point130_market = point130_market_for_identity(
+                point130_sales,
+                point130_identity,
+                target_currency=target.currency,
+                fx=fx,
+                max_age_days=int(settings.get("point130_sold_max_age_days", 365)),
+                required_edge=float(settings.get("point130_sold_required_edge", 0.12)),
+            )
+            market = _prefer_market_value(market, point130_market)
+            if point130_market is not None:
+                point130_matches += 1
+        identity = base_listing_identity if _market_needs_upgrade(market) else None
         listing_market_fingerprint_value: str | None = None
         if identity and target:
             fingerprint = f"{listing_comp_fingerprint(identity)}|{target.currency.upper()}"
@@ -1017,6 +1049,10 @@ def run_scan() -> int:
         1 for row in scored
         if row.market_value and row.market_value.market_type in {"ebay_active", "ebay_active_provisional"}
     )
+    point130_prices = sum(
+        1 for row in scored
+        if row.market_value and row.market_value.market_type == "point130_sold"
+    )
     verified_edges = sum(1 for row in scored if row.price_status == "verified_edge")
     candidate_api_successes = max(0, psa.api_successes - psa_api_success_baseline)
     notes.append(f"PSA API live: {_psa_status_label(psa_api_status)}")
@@ -1024,13 +1060,18 @@ def run_scan() -> int:
         notes.append("PSA API Hinweis: Token wurde nach Normalisierung abgelehnt; im PSA-Konto neu erzeugen")
     if psa_cache_upgrades:
         notes.append(f"PSA API Cache-Upgrades: {psa_cache_upgrades}")
+    notes.append(
+        "130point Sold-Comps: "
+        f"{len(point130_sales)} manuell verifizierte Verkäufe geladen; "
+        f"{point130_matches} Kandidaten-Match(es)"
+    )
     notes.append(_price_diag_note(price_diag))
     notes.append(
         "Coverage: "
         f"Details={len(scored)}; Cert={cert_detected}; PSA={candidate_api_successes}; "
         f"Verifiziert={cert_verified}; POP={pop_available}; Preis={price_indicators}; "
         f"eBayCompSuche={market_comp_calls}; eBayCompDetails={market_comp_detail_calls}; "
-        f"eBayCompPreis={ebay_comp_prices}; Edge={verified_edges}"
+        f"eBayCompPreis={ebay_comp_prices}; 130pointPreis={point130_prices}; Edge={verified_edges}"
     )
 
     completed = utc_now()
