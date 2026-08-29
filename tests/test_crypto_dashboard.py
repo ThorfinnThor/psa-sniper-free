@@ -122,6 +122,7 @@ def test_dashboard_build_contains_dynamic_market_quality_and_repricing_ui(tmp_pa
     save_state(state_file, demo_state())
     build_dashboard(state_file, out, password="this-is-a-long-test-password", plain=False)
     app = (out / "app.js").read_text(encoding="utf-8")
+    index = (out / "index.html").read_text(encoding="utf-8")
     assert "unabh. Verkäufer" in app
     assert "price_status === 'verified_edge'" in app
     assert "repricing_checked" in app
@@ -129,6 +130,12 @@ def test_dashboard_build_contains_dynamic_market_quality_and_repricing_ui(tmp_pa
     assert "Warum fehlt / schwächelt der Preis?" in app
     assert "Keine sichere Identität" in app
     assert "ageHours <= 3.75" in app
+    assert "function selectDefaultView()" in app
+    assert "rows.some(row => row.is_hit)" in app
+    assert "setResultView('watch')" in app
+    assert 'id="showAvailable"' in index
+    assert 'class="chip active" data-view="all"' in index
+    assert 'class="chip active" data-view="hits"' not in index
 
 
 def test_live_check_failed_is_visible_but_never_a_hit():

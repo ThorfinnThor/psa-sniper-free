@@ -39,6 +39,8 @@ Die GUI bietet:
 - Suche nach Karte, Spieler, Charakter, Set, Variante oder Cert,
 - Filter nach Mindestscore, maximaler POP und maximalen Gesamtkosten,
 - Ansichten für Hits, Beobachtung, Sofortkauf und Auktion,
+- intelligenter Startfilter: Kauf-Hits, wenn vorhanden, sonst direkt die Beobachtungen,
+- direkte Schaltfläche zu Beobachtungen, wenn ein manuell gewählter Kauf-Hit-Filter leer ist,
 - Sortierung nach Aktualität, Score, POP, Preis und Preisabstand,
 - Kartenbild, eBay-Link, PSA-Link, Preis, Versand, POP, Score-Gründe und Warnungen,
 - Verkäuferdaten und Listing-Alter,

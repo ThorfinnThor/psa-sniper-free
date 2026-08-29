@@ -55,6 +55,8 @@ Beide Punkte werden durch Diagnose, Workflow-Fehlertexte und Troubleshooting ein
 | Kein Kartentitel im verschlüsselten Dashboard-JSON | bestanden |
 | JavaScript/WebCrypto-kompatible Entschlüsselung | bestanden |
 | Statisches Dashboard in Chromium gerendert | bestanden |
+| Startfilter ohne Kauf-Hits zeigt Beobachtungen | bestanden |
+| Dashboard ohne horizontales Overflow bei 1280, 1024 und 390 px | bestanden |
 | Suche filtert Demo-Hits | bestanden |
 | lokale Statusaktion | bestanden |
 | verschlüsselter Git-State persistieren/wiederherstellen | bestanden |

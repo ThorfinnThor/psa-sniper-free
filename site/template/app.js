@@ -112,6 +112,7 @@ function showDashboard() {
   $('updatedAt').textContent = generated
     ? `Datenstand ${formatDate(generated, true)}`
     : 'Datenstand unbekannt';
+  selectDefaultView();
   bindControls();
   renderAll();
 }
@@ -139,11 +140,32 @@ function bindControls() {
     renderAll();
   });
   $('resetFilters').addEventListener('click', resetFilters);
+  $('showAvailable').addEventListener('click', () => {
+    const all = Array.isArray(state.payload?.hits) ? state.payload.hits : [];
+    setResultView(all.some(row => !row.is_hit) ? 'watch' : 'all');
+    renderAll();
+  });
 }
 
 function setActiveChip(containerId, selected) {
   $(containerId).querySelectorAll('.chip').forEach(button => button.classList.remove('active'));
-  selected.classList.add('active');
+  if (selected) selected.classList.add('active');
+}
+
+function setResultView(view) {
+  state.view = view;
+  setActiveChip('viewChips', $('viewChips').querySelector(`[data-view="${view}"]`));
+}
+
+function selectDefaultView() {
+  const rows = Array.isArray(state.payload?.hits) ? state.payload.hits : [];
+  if (rows.some(row => row.is_hit)) {
+    setResultView('hits');
+  } else if (rows.some(row => !row.is_hit)) {
+    setResultView('watch');
+  } else {
+    setResultView('all');
+  }
 }
 
 function resetFilters() {
@@ -152,9 +174,8 @@ function resetFilters() {
   $('maxPop').value = '';
   $('maxPrice').value = '';
   $('sortSelect').value = 'newest';
-  state.view = 'all';
   state.status = 'all';
-  setActiveChip('viewChips', $('viewChips').querySelector('[data-view="all"]'));
+  selectDefaultView();
   setActiveChip('statusChips', $('statusChips').querySelector('[data-status="all"]'));
   renderAll();
 }
@@ -169,6 +190,8 @@ function renderAll() {
   const grid = $('hitGrid');
   grid.replaceChildren(...rows.map(renderCard));
   $('emptyState').classList.toggle('hidden', rows.length !== 0);
+  const canShowWatch = state.view === 'hits' && all.some(row => !row.is_hit);
+  $('showAvailable').classList.toggle('hidden', rows.length !== 0 || !canShowWatch);
   renderRuns();
 }
 
