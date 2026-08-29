@@ -4,12 +4,16 @@ from psa_sniper.identity import PricingIdentity
 from psa_sniper.models import Listing, MarketValue, Money, PSACertInfo
 from psa_sniper.scanner import (
     _classify_price_gap,
+    _CompSearchTask,
     _market_needs_upgrade,
     _prefer_market_value,
+    _prepare_comp_search_tasks,
     _price_candidate_priority,
     _PriceCandidate,
+    _run_comp_search_task,
     _weak_market_diagnostics,
 )
+from psa_sniper.state import default_state
 
 
 def market(value, source, confidence, sample_size, market_type):
@@ -180,3 +184,96 @@ def test_price_priority_prefers_verified_cert_then_screening_score():
         "listing-only",
         "lower-score",
     ]
+
+
+def test_comp_plan_merges_identical_cert_and_listing_queries():
+    identity = PricingIdentity(
+        card_number="25",
+        subjects=("pikachu",),
+        terms=("pikachu",),
+    )
+    candidate = price_candidate(
+        "shared-query",
+        screening_score=10,
+        listing_identity=identity,
+        cert=PSACertInfo(
+            cert_number="12345678",
+            valid=True,
+            grade="GEM MT 10",
+            subject="Pikachu",
+            card_number="25",
+        ),
+        cert_market_safe=True,
+    )
+    candidate.listing_market_fingerprint = "listing:shared-query|EUR"
+
+    _prepare_comp_search_tasks(candidate)
+
+    shared = [task for task in candidate.search_tasks if task.mode == "cert+listing"]
+    assert len(shared) == 1
+    assert shared[0].query == "Pikachu 25 PSA 10"
+    assert candidate.merged_searches == 1
+
+
+def test_shared_comp_query_feeds_both_identity_filters_with_one_call():
+    identity = PricingIdentity(
+        card_number="25",
+        subjects=("pikachu",),
+        terms=("pikachu",),
+    )
+    candidate = price_candidate(
+        "shared-evidence",
+        screening_score=10,
+        listing_identity=identity,
+        cert=PSACertInfo(
+            cert_number="12345678",
+            valid=True,
+            grade="GEM MT 10",
+            subject="Pikachu",
+            card_number="25",
+        ),
+        cert_market_safe=True,
+    )
+    candidate.listing_market_fingerprint = "listing:shared-evidence|EUR"
+    rows = [
+        Listing(
+            item_id=f"comp-{index}",
+            title="Pikachu #25 PSA 10",
+            url=f"https://example.test/comp-{index}",
+            price=Money(price, "EUR"),
+            created_at=datetime(2026, 8, 29, tzinfo=UTC),
+            buying_options=["FIXED_PRICE"],
+            seller=f"seller-{index}",
+        )
+        for index, price in enumerate((130, 135, 140), start=1)
+    ]
+
+    class Ebay:
+        calls_made = 0
+
+        def search(self, *_args, **_kwargs):
+            self.calls_made += 1
+            return rows
+
+    class FX:
+        def convert(self, money, currency):
+            return money if money.currency == currency else None
+
+    ebay = Ebay()
+    state = default_state()
+    _run_comp_search_task(
+        candidate,
+        _CompSearchTask("cert+listing", "Pikachu 25 PSA 10"),
+        ebay=ebay,
+        fx=FX(),
+        state=state,
+        search_limit=100,
+        required_edge=0.20,
+    )
+
+    assert ebay.calls_made == 1
+    assert len(candidate.cert_comp_rows) == 3
+    assert len(candidate.listing_comp_rows) == 3
+    assert candidate.market is not None
+    assert candidate.market.market_type == "ebay_active"
+    assert candidate.market.confidence == "mittel"

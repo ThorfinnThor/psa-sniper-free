@@ -56,7 +56,7 @@ from .state import (
     should_alert,
     upsert_history,
 )
-from .util import iso_z, utc_now
+from .util import iso_z, normalize_text, utc_now
 
 
 def _merge_listing(summary: Listing, detail: Listing) -> Listing:
@@ -288,6 +288,7 @@ class _PriceCandidate:
     search_tasks: list[_CompSearchTask] = field(default_factory=list)
     cert_comp_rows: list[Listing] = field(default_factory=list)
     listing_comp_rows: list[Listing] = field(default_factory=list)
+    merged_searches: int = 0
 
     @property
     def target_available(self) -> bool:
@@ -345,6 +346,23 @@ def _price_candidate_priority(candidate: _PriceCandidate) -> tuple[int, int, int
 
 def _prepare_comp_search_tasks(candidate: _PriceCandidate) -> None:
     tasks: list[_CompSearchTask] = []
+    candidate.merged_searches = 0
+
+    def add_task(mode: str, query: str) -> None:
+        key = normalize_text(query)
+        if not key:
+            return
+        duplicate = next(
+            (task for task in tasks if normalize_text(task.query) == key and task.offset == 0),
+            None,
+        )
+        if duplicate is None:
+            tasks.append(_CompSearchTask(mode, query))
+            return
+        if duplicate.mode != mode and duplicate.mode != "cert+listing":
+            duplicate.mode = "cert+listing"
+            candidate.merged_searches += 1
+
     if candidate.cert_market_fingerprint and candidate.cert:
         queries = dict.fromkeys(
             query
@@ -354,13 +372,12 @@ def _prepare_comp_search_tasks(candidate: _PriceCandidate) -> None:
             ]
             if query
         )
-        tasks.extend(_CompSearchTask("cert", query) for query in queries)
+        for query in queries:
+            add_task("cert", query)
     if candidate.listing_market_fingerprint and candidate.listing_identity:
-        tasks.extend(
-            _CompSearchTask("listing", query)
-            for query in dict.fromkeys(build_listing_comp_queries(candidate.listing_identity))
-            if query
-        )
+        for query in dict.fromkeys(build_listing_comp_queries(candidate.listing_identity)):
+            if query:
+                add_task("listing", query)
     candidate.search_tasks = tasks
 
 
@@ -386,7 +403,8 @@ def _run_comp_search_task(
     candidate.search_attempted = True
     candidate.search_rows += len(rows)
 
-    if task.mode == "cert" and candidate.cert:
+    exact_counts: list[int] = []
+    if task.mode in {"cert", "cert+listing"} and candidate.cert:
         candidate.cert_comp_rows.extend(rows)
         values = exact_active_comps(
             candidate.cert_comp_rows,
@@ -403,8 +421,8 @@ def _run_comp_search_task(
         candidate.market = _prefer_market_value(candidate.market, comp_market)
         if comp_market is not None and candidate.cert_market_fingerprint:
             put_cached_market(state, candidate.cert_market_fingerprint, comp_market)
-        exact_count = len(values)
-    elif task.mode == "listing" and candidate.listing_identity:
+        exact_counts.append(len(values))
+    if task.mode in {"listing", "cert+listing"} and candidate.listing_identity:
         candidate.listing_comp_rows.extend(rows)
         values = exact_active_comps_for_listing(
             candidate.listing_comp_rows,
@@ -421,9 +439,9 @@ def _run_comp_search_task(
         candidate.market = _prefer_market_value(candidate.market, listing_market)
         if listing_market is not None and candidate.listing_market_fingerprint:
             put_cached_market(state, candidate.listing_market_fingerprint, listing_market)
-        exact_count = len(values)
-    else:
-        exact_count = 0
+        exact_counts.append(len(values))
+
+    exact_count = max(exact_counts, default=0)
 
     if task.offset == 0 and len(rows) >= search_limit and exact_count < 3:
         candidate.search_tasks.append(
@@ -710,6 +728,13 @@ def run_scan() -> int:
         candidate.market = market
         if _market_needs_upgrade(candidate.market):
             _prepare_comp_search_tasks(candidate)
+
+    merged_searches = sum(candidate.merged_searches for candidate in price_candidates)
+    if merged_searches:
+        notes.append(
+            "Comp-Suchplan: "
+            f"{merged_searches} identische Cert-/Listing-Abfrage(n) zusammengeführt"
+        )
 
     comp_candidate_ids: set[str] = set()
     ebay_budget_exhausted = False
