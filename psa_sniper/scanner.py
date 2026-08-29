@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from typing import Any
 
@@ -262,6 +262,13 @@ def _price_diag_note(values: dict[str, int]) -> str:
 
 
 @dataclass(slots=True)
+class _CompSearchTask:
+    mode: str
+    query: str
+    offset: int = 0
+
+
+@dataclass(slots=True)
 class _PriceCandidate:
     listing: Listing
     preliminary: int
@@ -278,6 +285,9 @@ class _PriceCandidate:
     exact_matches: int = 0
     budget_blocked: bool = False
     search_error: bool = False
+    search_tasks: list[_CompSearchTask] = field(default_factory=list)
+    cert_comp_rows: list[Listing] = field(default_factory=list)
+    listing_comp_rows: list[Listing] = field(default_factory=list)
 
     @property
     def target_available(self) -> bool:
@@ -331,6 +341,94 @@ def _price_candidate_priority(candidate: _PriceCandidate) -> tuple[int, int, int
         candidate.preliminary,
         created,
     )
+
+
+def _prepare_comp_search_tasks(candidate: _PriceCandidate) -> None:
+    tasks: list[_CompSearchTask] = []
+    if candidate.cert_market_fingerprint and candidate.cert:
+        queries = dict.fromkeys(
+            query
+            for query in [
+                build_comp_query(candidate.cert),
+                build_fallback_comp_query(candidate.cert),
+            ]
+            if query
+        )
+        tasks.extend(_CompSearchTask("cert", query) for query in queries)
+    if candidate.listing_market_fingerprint and candidate.listing_identity:
+        tasks.extend(
+            _CompSearchTask("listing", query)
+            for query in dict.fromkeys(build_listing_comp_queries(candidate.listing_identity))
+            if query
+        )
+    candidate.search_tasks = tasks
+
+
+def _run_comp_search_task(
+    candidate: _PriceCandidate,
+    task: _CompSearchTask,
+    *,
+    ebay: EbayClient,
+    fx: FXRates,
+    state: dict[str, Any],
+    search_limit: int,
+    required_edge: float,
+) -> None:
+    target = candidate.listing.total_cost or candidate.listing.price
+    if target is None:
+        return
+    rows = ebay.search(
+        task.query,
+        limit=search_limit,
+        started_after=None,
+        offset=task.offset,
+    )
+    candidate.search_attempted = True
+    candidate.search_rows += len(rows)
+
+    if task.mode == "cert" and candidate.cert:
+        candidate.cert_comp_rows.extend(rows)
+        values = exact_active_comps(
+            candidate.cert_comp_rows,
+            candidate.cert,
+            target_currency=target.currency,
+            fx=fx,
+            exclude_item_id=candidate.listing.item_id,
+        )
+        candidate.exact_matches = max(candidate.exact_matches, len(values))
+        comp_market = market_value_from_active_comps(
+            values,
+            medium_required_edge=required_edge,
+        )
+        candidate.market = _prefer_market_value(candidate.market, comp_market)
+        if comp_market is not None and candidate.cert_market_fingerprint:
+            put_cached_market(state, candidate.cert_market_fingerprint, comp_market)
+        exact_count = len(values)
+    elif task.mode == "listing" and candidate.listing_identity:
+        candidate.listing_comp_rows.extend(rows)
+        values = exact_active_comps_for_listing(
+            candidate.listing_comp_rows,
+            candidate.listing_identity,
+            target_currency=target.currency,
+            fx=fx,
+            exclude_item_id=candidate.listing.item_id,
+        )
+        candidate.exact_matches = max(candidate.exact_matches, len(values))
+        listing_market = market_value_from_listing_comps(
+            values,
+            required_edge=max(0.25, required_edge),
+        )
+        candidate.market = _prefer_market_value(candidate.market, listing_market)
+        if listing_market is not None and candidate.listing_market_fingerprint:
+            put_cached_market(state, candidate.listing_market_fingerprint, listing_market)
+        exact_count = len(values)
+    else:
+        exact_count = 0
+
+    if task.offset == 0 and len(rows) >= search_limit and exact_count < 3:
+        candidate.search_tasks.append(
+            _CompSearchTask(task.mode, task.query, offset=search_limit)
+        )
 
 
 def run_scan() -> int:
@@ -582,11 +680,13 @@ def run_scan() -> int:
         f"maximal {max_comp_calls} Comp-Calls"
     )
 
+    # PSA-Daten werden vor der Comp-Verteilung angereichert. Anschließend erhält
+    # jeder noch offene Kandidat zunächst genau eine Suche. Erst in späteren
+    # Runden kommen Fallback-Abfragen und zweite Ergebnisseiten zum Zug.
     for candidate in price_candidates:
         listing = candidate.listing
         cert = candidate.cert
         market = candidate.market
-        target = listing.total_cost or listing.price
 
         if (
             cert and cert.valid and candidate.cert_market_safe and market is None
@@ -607,138 +707,70 @@ def run_scan() -> int:
                 put_cached_cert(state, enriched)
                 market = _market_in_listing_currency(market_value_from_cert(enriched), listing, fx)
 
-        if (
-            _market_needs_upgrade(market)
-            and candidate.cert_market_fingerprint
-            and cert
-            and target
-        ):
-            if market_comp_calls >= max_comp_calls:
-                candidate.budget_blocked = True
-            else:
-                try:
-                    comp_rows: list[Listing] = []
-                    values = []
-                    for comp_query in dict.fromkeys(
-                        query for query in [build_comp_query(cert), build_fallback_comp_query(cert)] if query
-                    ):
-                        if market_comp_calls >= max_comp_calls:
-                            break
-                        rows = ebay.search(comp_query, limit=comp_search_limit, started_after=None, offset=0)
-                        candidate.search_attempted = True
-                        candidate.search_rows += len(rows)
-                        market_comp_calls += 1
-                        comp_rows.extend(rows)
-                        values = exact_active_comps(
-                            comp_rows, cert, target_currency=target.currency, fx=fx,
-                            exclude_item_id=listing.item_id,
-                        )
-                        candidate.exact_matches = max(candidate.exact_matches, len(values))
-                        if (
-                            len(values) < 3 and len(rows) >= comp_search_limit
-                            and market_comp_calls < max_comp_calls
-                        ):
-                            rows2 = ebay.search(
-                                comp_query, limit=comp_search_limit,
-                                started_after=None, offset=comp_search_limit,
-                            )
-                            candidate.search_attempted = True
-                            candidate.search_rows += len(rows2)
-                            market_comp_calls += 1
-                            comp_rows.extend(rows2)
-                            values = exact_active_comps(
-                                comp_rows, cert, target_currency=target.currency, fx=fx,
-                                exclude_item_id=listing.item_id,
-                            )
-                            candidate.exact_matches = max(candidate.exact_matches, len(values))
-                        if len(values) >= 3:
-                            break
-                    comp_market = market_value_from_active_comps(
-                        values, medium_required_edge=comp_required_edge,
-                    )
-                    market = _prefer_market_value(market, comp_market)
-                    if comp_market is not None:
-                        put_cached_market(state, candidate.cert_market_fingerprint, comp_market)
-                except EbayBudgetExceeded:
-                    candidate.budget_blocked = True
-                    notes.append("eBay-Budget für weitere Preis-Comps ausgeschöpft")
-                except EbayError:
-                    candidate.search_error = True
-                    notes.append("Mindestens eine eBay-Preisvergleichssuche ist fehlgeschlagen")
-
-        if (
-            _market_needs_upgrade(market)
-            and candidate.listing_identity
-            and candidate.listing_market_fingerprint
-            and target
-        ):
-            if market_comp_calls >= max_comp_calls:
-                candidate.budget_blocked = True
-            else:
-                try:
-                    comp_rows = []
-                    values = []
-                    for comp_query in build_listing_comp_queries(candidate.listing_identity):
-                        if market_comp_calls >= max_comp_calls:
-                            break
-                        rows = ebay.search(comp_query, limit=comp_search_limit, started_after=None, offset=0)
-                        candidate.search_attempted = True
-                        candidate.search_rows += len(rows)
-                        market_comp_calls += 1
-                        comp_rows.extend(rows)
-                        values = exact_active_comps_for_listing(
-                            comp_rows, candidate.listing_identity,
-                            target_currency=target.currency, fx=fx,
-                            exclude_item_id=listing.item_id,
-                        )
-                        candidate.exact_matches = max(candidate.exact_matches, len(values))
-                        if (
-                            len(values) < 3 and len(rows) >= comp_search_limit
-                            and market_comp_calls < max_comp_calls
-                        ):
-                            rows2 = ebay.search(
-                                comp_query, limit=comp_search_limit,
-                                started_after=None, offset=comp_search_limit,
-                            )
-                            candidate.search_attempted = True
-                            candidate.search_rows += len(rows2)
-                            market_comp_calls += 1
-                            comp_rows.extend(rows2)
-                            values = exact_active_comps_for_listing(
-                                comp_rows, candidate.listing_identity,
-                                target_currency=target.currency, fx=fx,
-                                exclude_item_id=listing.item_id,
-                            )
-                            candidate.exact_matches = max(candidate.exact_matches, len(values))
-                        if len(values) >= 3:
-                            break
-                    listing_market = market_value_from_listing_comps(
-                        values, required_edge=max(0.25, comp_required_edge),
-                    )
-                    market = _prefer_market_value(market, listing_market)
-                    if listing_market is not None:
-                        put_cached_market(
-                            state, candidate.listing_market_fingerprint, listing_market,
-                        )
-                except EbayBudgetExceeded:
-                    candidate.budget_blocked = True
-                    notes.append("eBay-Budget für weitere Listing-Preis-Comps ausgeschöpft")
-                except EbayError:
-                    candidate.search_error = True
-                    notes.append("Mindestens eine Listing-Preisvergleichssuche ist fehlgeschlagen")
-
         candidate.market = market
+        if _market_needs_upgrade(candidate.market):
+            _prepare_comp_search_tasks(candidate)
+
+    comp_candidate_ids: set[str] = set()
+    ebay_budget_exhausted = False
+    while market_comp_calls < max_comp_calls and not ebay_budget_exhausted:
+        round_progress = False
+        for candidate in price_candidates:
+            if market_comp_calls >= max_comp_calls:
+                break
+            if not _market_needs_upgrade(candidate.market):
+                candidate.search_tasks.clear()
+                continue
+            if not candidate.search_tasks:
+                continue
+
+            round_progress = True
+            task = candidate.search_tasks.pop(0)
+            try:
+                _run_comp_search_task(
+                    candidate,
+                    task,
+                    ebay=ebay,
+                    fx=fx,
+                    state=state,
+                    search_limit=comp_search_limit,
+                    required_edge=comp_required_edge,
+                )
+            except EbayBudgetExceeded:
+                candidate.budget_blocked = True
+                ebay_budget_exhausted = True
+                notes.append("eBay-Budget für weitere Preis-Comps ausgeschöpft")
+                break
+            except EbayError:
+                candidate.search_error = True
+                notes.append("Mindestens eine eBay-Preisvergleichssuche ist fehlgeschlagen")
+            else:
+                market_comp_calls += 1
+                comp_candidate_ids.add(candidate.listing.item_id)
+
+        if not round_progress:
+            break
+
+    if market_comp_calls >= max_comp_calls or ebay_budget_exhausted:
+        for candidate in price_candidates:
+            if _market_needs_upgrade(candidate.market) and candidate.search_tasks:
+                candidate.budget_blocked = True
+
+    budget_open = sum(1 for candidate in price_candidates if candidate.budget_blocked)
+    notes.append(
+        "Comp-Fairness: "
+        f"{len(comp_candidate_ids)} Kandidat(en) erhielten mindestens eine Suche; "
+        f"{budget_open} budgetbedingt offen"
+    )
+
+    for candidate in price_candidates:
+        listing = candidate.listing
         hit = _score_price_candidate(
             candidate,
             priority_terms=priority_terms,
             demand_terms=demand_terms,
             settings=settings,
-            market=market,
-        )
-        eligible_for_comp = bool(
-            candidate.target_available
-            and candidate.preliminary >= listing_market_min_prelim
-            and candidate.identity_available
+            market=candidate.market,
         )
         gap_reason = _classify_price_gap(
             hit.market_value,
@@ -749,14 +781,7 @@ def run_scan() -> int:
             search_attempted=candidate.search_attempted,
             search_rows=candidate.search_rows,
             exact_matches=candidate.exact_matches,
-            budget_blocked=(
-                candidate.budget_blocked
-                or (
-                    hit.market_value is None
-                    and eligible_for_comp
-                    and market_comp_calls >= max_comp_calls
-                )
-            ),
+            budget_blocked=candidate.budget_blocked,
             search_error=candidate.search_error,
         )
         if gap_reason:

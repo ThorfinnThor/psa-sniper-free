@@ -18,4 +18,5 @@
 - Diagnosemodus, Demo-GUI und automatisierte Tests
 - installierbares Paket mit expliziter Setuptools-Paket-Discovery
 - globale zweistufige Priorisierung des knappen Preisvergleichs-Budgets
+- faire rundenbasierte Comp-Verteilung mit einer Primärsuche pro Kandidat vor Fallbacks
 - Ruff-Prüfung für den Produktionscode in CI und Live-Workflow

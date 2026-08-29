@@ -23,6 +23,7 @@ Beide Punkte werden durch Diagnose, Workflow-Fehlertexte und Troubleshooting ein
 - Cooldown für bereits verarbeitete Listings,
 - quota-gesteuertes eBay-Call-Budget mit maximal 4.600 theoretischen Calls/Tag,
 - zweistufige globale Preispriorisierung statt Comp-Budget nach Discovery-Reihenfolge,
+- rundenbasierte Comp-Fairness: eine Primärsuche pro geeignetem Kandidaten vor Fallbacks,
 - Versandkosten in den Gesamtkosten,
 - reine Auktionen standardmäßig ausgeschlossen,
 - keine Discount-Punkte für laufende Auktionen,
@@ -42,7 +43,7 @@ Beide Punkte werden durch Diagnose, Workflow-Fehlertexte und Troubleshooting ein
 
 | Prüfung | Ergebnis |
 |---|---|
-| Python Unit Tests | 110 bestanden |
+| Python Unit Tests | 111 bestanden |
 | Ruff Produktionscode | bestanden |
 | Python `compileall` | bestanden |
 | JavaScript Syntaxcheck | bestanden |

@@ -218,7 +218,7 @@ Theoretisches Maximum:
 
 Das ist nur die harte theoretische Obergrenze. Die Quota-Logik reserviert standardmäßig 350 Calls und reduziert spätere Läufe, sobald die rollierende Nutzung zu hoch wird. OAuth-Aufrufe und externe PSA-/ECB-Aufrufe sind separate Dienste.
 
-Vergleichspreise werden nicht mehr in Discovery-Reihenfolge gesucht. Zuerst lädt der Scanner alle Detailkandidaten, bestimmt Identität, Cert und vorhandene Caches und rankt anschließend global. Das knappe Comp-Budget geht dadurch zuerst an Kandidaten mit belastbarer Identität und starkem Screening-Signal.
+Vergleichspreise werden nicht mehr in Discovery-Reihenfolge gesucht. Zuerst lädt der Scanner alle Detailkandidaten, bestimmt Identität, Cert und vorhandene Caches und rankt anschließend global. Danach verteilt er die Comp-Suchen in Runden: Jeder geeignete Kandidat erhält zunächst eine Primärsuche; erst anschließend werden Fallback-Abfragen und zweite Ergebnisseiten ausgeführt. So bleibt die Qualitätspriorisierung erhalten, ohne dass einzelne Kandidaten das knappe Budget vorzeitig aufbrauchen.
 
 Erhöhe die Werte nicht blind. Der Diagnosemodus warnt bei einer Konfiguration, die das kostenlose Budget zu stark ausreizt.
 
