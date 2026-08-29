@@ -1,11 +1,11 @@
-name: Apply Audit V2 Safety
+name: Apply Audit V2 Operations
 
 on:
   push:
     branches: ["audit-v2-20260829"]
     paths:
       - ".github/workflows/audit-v2-apply.yml"
-      - "scripts/apply_audit_v2_safety.py"
+      - "scripts/apply_audit_v2_operations.py"
 
 permissions:
   contents: write
@@ -24,11 +24,11 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements-dev.txt
-      - name: Sicherheits-Fixes anwenden und testen
+      - name: Betriebs-Fixes anwenden und testen
         shell: bash
         run: |
           set -euo pipefail
-          python scripts/apply_audit_v2_safety.py
+          python scripts/apply_audit_v2_operations.py
           pytest -q
           python -m compileall -q psa_sniper
           node --check site/template/app.js
@@ -44,11 +44,9 @@ jobs:
             psa_sniper/live_check.py \
             psa_sniper/repricing.py \
             psa_sniper/psa_backfill.py \
-            psa_sniper/state.py \
             config/settings.json \
+            tests/test_psa.py \
             tests/test_scoring.py \
-            tests/test_alert_rearm.py \
-            tests/test_psa_backfill.py \
             tests/test_quality_config.py
-          git commit -m "Add import-risk gates and alert rearming"
+          git commit -m "Harden PSA retries and unknown shipping pricing"
           git push origin HEAD:audit-v2-20260829
