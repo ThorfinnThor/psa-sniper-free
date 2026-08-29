@@ -1,0 +1,48 @@
+name: Apply Price Coverage V3
+
+on:
+  push:
+    branches: ["price-coverage-v3-20260829"]
+    paths:
+      - ".github/workflows/price-coverage-v3-apply.yml"
+      - "scripts/apply_price_coverage_v3.py"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: price-coverage-v3-20260829
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - name: Preis-Coverage-Fixes anwenden und testen
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/apply_price_coverage_v3.py
+          pytest -q
+          python -m compileall -q psa_sniper
+          node --check site/template/app.js
+          python -m psa_sniper demo --output site/dist
+          (cd cloudflare/ebay-webhook && npm test)
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            psa_sniper/identity.py \
+            psa_sniper/listing_market.py \
+            psa_sniper/scanner.py \
+            psa_sniper/repricing.py \
+            psa_sniper/scoring.py \
+            tests/test_listing_market.py
+          git commit -m "Improve sparse PSA 10 price verification"
+          git push origin HEAD:price-coverage-v3-20260829
