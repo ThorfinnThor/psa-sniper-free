@@ -125,4 +125,7 @@ def test_dashboard_build_contains_dynamic_market_quality_and_repricing_ui(tmp_pa
     assert "unabh. Verkäufer" in app
     assert "price_status === 'verified_edge'" in app
     assert "repricing_checked" in app
+    assert "PriceDiag:" in app
+    assert "Warum fehlt / schwächelt der Preis?" in app
+    assert "Keine sichere Identität" in app
     assert "ageHours <= 3.75" in app

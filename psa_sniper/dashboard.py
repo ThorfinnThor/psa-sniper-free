@@ -119,8 +119,10 @@ def _coverage_js() -> str:
   const run = state.payload?.runs?.[0];
   const notes = Array.isArray(run?.notes) ? run.notes : [];
   const coverageLine = notes.find(note => String(note).startsWith('Coverage:'));
+  const priceDiagLine = notes.find(note => String(note).startsWith('PriceDiag:'));
   const statusLine = notes.find(note => String(note).startsWith('PSA API live:'));
   const values = {};
+  const priceDiag = {};
   if (coverageLine) {
     String(coverageLine).replace(/^Coverage:\s*/, '').split(';').forEach(part => {
       const separator = part.indexOf('=');
@@ -131,10 +133,19 @@ def _coverage_js() -> str:
       values[key] = Number.isFinite(number) ? number : raw;
     });
   }
+  if (priceDiagLine) {
+    String(priceDiagLine).replace(/^PriceDiag:\s*/, '').split(';').forEach(part => {
+      const separator = part.indexOf('=');
+      if (separator < 0) return;
+      const key = part.slice(0, separator).trim();
+      const number = Number(part.slice(separator + 1).trim());
+      priceDiag[key] = Number.isFinite(number) ? number : 0;
+    });
+  }
   const psaStatus = statusLine
     ? String(statusLine).split(':').slice(1).join(':').trim()
     : 'NICHT GETESTET';
-  return { run, values, psaStatus };
+  return { run, values, priceDiag, psaStatus };
 }
 
 function marketDetail(market) {
@@ -204,6 +215,61 @@ function renderCoverage() {
   }));
 }
 
+function ensurePriceDiagnosticsElements() {
+  let header = $('priceDiagHeader');
+  let grid = $('priceDiag');
+  if (!header) {
+    header = el('div', 'result-bar');
+    header.id = 'priceDiagHeader';
+    $('coverage').after(header);
+  }
+  if (!grid) {
+    grid = el('section', 'stats-grid');
+    grid.id = 'priceDiag';
+    grid.setAttribute('aria-label', 'Preisdiagnose des letzten Scanner-Laufs');
+    header.after(grid);
+  }
+  return { header, grid };
+}
+
+function renderPriceDiagnostics() {
+  const { header, grid } = ensurePriceDiagnosticsElements();
+  const { run, priceDiag } = coverageData();
+  const noPrice = Number(priceDiag.OhnePreis || 0);
+  const weak = Number(priceDiag.Schwach || 0);
+  header.replaceChildren(
+    el('p', '', 'Warum fehlt / schwächelt der Preis?'),
+    el('p', 'muted compact', run ? `${noPrice} ohne Preisindikator · ${weak} schwache Preisquelle(n)` : 'Noch keine Diagnosedaten'),
+  );
+  const cards = [
+    ['Ohne Preisindikator', noPrice, 'nach allen verfügbaren Preiswegen'],
+    ['Screening-Gate', priceDiag.UnterGate || 0, 'Pre-Score zu niedrig für zusätzliche Comp-Calls'],
+    ['Keine sichere Identität', priceDiag.KeineIdentitaet || 0, 'Kartennummer / Subject / Set nicht belastbar genug'],
+    ['Keine Suchtreffer', priceDiag.KeineSuchtreffer || 0, 'eBay lieferte für die Comp-Queries keine Treffer'],
+    ['0 exakte Comps', priceDiag.KeineExaktenComps || 0, 'Treffer vorhanden, aber Identitätsfilter lehnten alle ab'],
+    ['Nur wenige Comps', priceDiag.ZuWenigeComps || 0, 'weniger als 3 exakte Vergleichsangebote ohne Preisanker'],
+    ['Budget blockiert', priceDiag.Budget || 0, 'Comp-Budget war für diesen Kandidaten ausgeschöpft'],
+    ['Suchfehler', priceDiag.Suchfehler || 0, 'eBay-Comp-Suche technisch fehlgeschlagen'],
+    ['Kein Zielpreis', priceDiag.KeinZielpreis || 0, 'Listing hatte keinen verwertbaren Gesamtpreis'],
+    ['Sonstige Ursache', priceDiag.Sonstiges || 0, 'Identität vorhanden, aber kein belastbarer Preis entstanden'],
+    ['Schwache Quellen', weak, 'Preis vorhanden, aber nicht stark genug für Kaufurteil'],
+    ['davon PSA Estimate', priceDiag.SchwachPSAEstimate || 0, 'nur PSA-Schätzwert statt belastbarer Markt-Comps'],
+    ['< 3 exakte Comps', priceDiag.SchwachComps || 0, 'Preisanker basiert auf sehr kleiner Stichprobe'],
+    ['< 3 Verkäufer', priceDiag.SchwachVerkaeufer || 0, 'zu wenig unabhängige Angebotsquellen'],
+    ['Hohe Streuung', priceDiag.SchwachStreuung || 0, 'Comp-Preise liegen zu weit auseinander'],
+    ['Identität unvollständig', priceDiag.SchwachIdentitaet || 0, 'Listing-basierter oder unvollständig bestätigter Match'],
+  ].filter(([label, value]) => label === 'Ohne Preisindikator' || Number(value) > 0);
+  grid.replaceChildren(...cards.map(([label, value, note]) => {
+    const card = el('article', 'stat-card');
+    card.append(
+      el('div', 'stat-label', label),
+      el('div', 'stat-value', String(value)),
+      el('div', 'stat-note', note),
+    );
+    return card;
+  }));
+}
+
 '''
 
 
@@ -259,7 +325,7 @@ def _apply_dashboard_ui_defaults(output_dir: Path) -> None:
         ),
         (
             "  renderStats(all);\n  renderHealth();",
-            "  renderStats(all);\n  renderCoverage();\n  renderHealth();",
+            "  renderStats(all);\n  renderCoverage();\n  renderPriceDiagnostics();\n  renderHealth();",
             "Coverage-Render",
         ),
         (

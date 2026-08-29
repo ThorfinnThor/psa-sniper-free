@@ -169,6 +169,92 @@ def _psa_status_label(status: str) -> str:
     }.get(status, "UNBEKANNT")
 
 
+def _new_price_diagnostics() -> dict[str, int]:
+    return {
+        "OhnePreis": 0,
+        "UnterGate": 0,
+        "KeineIdentitaet": 0,
+        "KeineSuchtreffer": 0,
+        "KeineExaktenComps": 0,
+        "ZuWenigeComps": 0,
+        "Budget": 0,
+        "Suchfehler": 0,
+        "KeinZielpreis": 0,
+        "Sonstiges": 0,
+        "Schwach": 0,
+        "SchwachPSAEstimate": 0,
+        "SchwachComps": 0,
+        "SchwachVerkaeufer": 0,
+        "SchwachStreuung": 0,
+        "SchwachIdentitaet": 0,
+    }
+
+
+def _classify_price_gap(
+    market: MarketValue | None,
+    *,
+    target_available: bool,
+    preliminary: int,
+    min_preliminary: int,
+    identity_available: bool,
+    search_attempted: bool,
+    search_rows: int,
+    exact_matches: int,
+    budget_blocked: bool,
+    search_error: bool,
+) -> str | None:
+    if market is not None:
+        return None
+    if not target_available:
+        return "KeinZielpreis"
+    if preliminary < min_preliminary:
+        return "UnterGate"
+    if budget_blocked:
+        return "Budget"
+    if search_error:
+        return "Suchfehler"
+    if not identity_available:
+        return "KeineIdentitaet"
+    if search_attempted and search_rows <= 0:
+        return "KeineSuchtreffer"
+    if search_attempted and exact_matches <= 0:
+        return "KeineExaktenComps"
+    if search_attempted and exact_matches < 3:
+        return "ZuWenigeComps"
+    return "Sonstiges"
+
+
+def _weak_market_diagnostics(market: MarketValue | None) -> list[str]:
+    if market is None or market.confidence.casefold() != "niedrig":
+        return []
+    keys = ["Schwach"]
+    if market.market_type == "psa_estimate":
+        keys.append("SchwachPSAEstimate")
+        return keys
+    if market.market_type not in {"ebay_active", "ebay_active_provisional"}:
+        return keys
+    if int(market.sample_size or 0) < 3:
+        keys.append("SchwachComps")
+    if market.unique_sellers is not None and int(market.unique_sellers) < 3:
+        keys.append("SchwachVerkaeufer")
+    if market.dispersion is not None and float(market.dispersion) > 0.35:
+        keys.append("SchwachStreuung")
+    if market.market_type == "ebay_active_provisional" or len(keys) == 1:
+        keys.append("SchwachIdentitaet")
+    return keys
+
+
+def _price_diag_note(values: dict[str, int]) -> str:
+    order = (
+        "OhnePreis", "UnterGate", "KeineIdentitaet", "KeineSuchtreffer",
+        "KeineExaktenComps", "ZuWenigeComps", "Budget", "Suchfehler",
+        "KeinZielpreis", "Sonstiges", "Schwach", "SchwachPSAEstimate",
+        "SchwachComps", "SchwachVerkaeufer", "SchwachStreuung",
+        "SchwachIdentitaet",
+    )
+    return "PriceDiag: " + "; ".join(f"{key}={int(values.get(key, 0))}" for key in order)
+
+
 def run_scan() -> int:
     started = utc_now()
     settings = load_settings()
@@ -296,6 +382,7 @@ def run_scan() -> int:
     max_psa_market_web_calls = int(settings.get("max_psa_market_web_calls_per_run", 0))
     psa_market_web_calls = 0
     psa_market_web_min_prelim = int(settings.get("psa_market_web_min_preliminary_score", 8))
+    price_diag = _new_price_diagnostics()
 
     for summary in candidates:
         try:
@@ -308,6 +395,14 @@ def run_scan() -> int:
             continue
 
         listing = _merge_listing(summary, detail)
+        prelim = preliminary_score(listing, priority_terms)
+        diag_target = listing.total_cost or listing.price
+        diag_identity_available = False
+        diag_search_attempted = False
+        diag_search_rows = 0
+        diag_exact_matches = 0
+        diag_budget_blocked = False
+        diag_search_error = False
         cert_candidate: CertCandidate | None = extract_cert_from_aspects(listing)
         if not cert_candidate:
             cert_candidate = extract_cert_from_title(listing.title)
@@ -335,7 +430,7 @@ def run_scan() -> int:
         if (
             cert and cert.valid and market is None
             and psa_market_web_calls < max_psa_market_web_calls
-            and preliminary_score(listing, priority_terms) >= psa_market_web_min_prelim
+            and prelim >= psa_market_web_min_prelim
             and not psa.web_rate_limited
         ):
             before = psa.calls_made
@@ -354,6 +449,7 @@ def run_scan() -> int:
             _market_needs_upgrade(market) and cert and cert.valid and is_psa10(cert.grade)
             and _ocr_cert_safe_for_market(listing, cert_candidate, cert)
         ):
+            diag_identity_available = True
             target = listing.total_cost or listing.price
             if target:
                 fingerprint = f"{cert_fingerprint(cert)}|{target.currency.upper()}"
@@ -371,12 +467,15 @@ def run_scan() -> int:
                                 if market_comp_calls >= max_comp_calls:
                                     break
                                 rows = ebay.search(comp_query, limit=comp_search_limit, started_after=None, offset=0)
+                                diag_search_attempted = True
+                                diag_search_rows += len(rows)
                                 market_comp_calls += 1
                                 comp_rows.extend(rows)
                                 values = exact_active_comps(
                                     comp_rows, cert, target_currency=target.currency, fx=fx,
                                     exclude_item_id=listing.item_id,
                                 )
+                                diag_exact_matches = max(diag_exact_matches, len(values))
                                 if (
                                     len(values) < 3 and len(rows) >= comp_search_limit
                                     and market_comp_calls < max_comp_calls
@@ -385,12 +484,15 @@ def run_scan() -> int:
                                         comp_query, limit=comp_search_limit,
                                         started_after=None, offset=comp_search_limit,
                                     )
+                                    diag_search_attempted = True
+                                    diag_search_rows += len(rows2)
                                     market_comp_calls += 1
                                     comp_rows.extend(rows2)
                                     values = exact_active_comps(
                                         comp_rows, cert, target_currency=target.currency, fx=fx,
                                         exclude_item_id=listing.item_id,
                                     )
+                                    diag_exact_matches = max(diag_exact_matches, len(values))
                                 if len(values) >= 3:
                                     break
                             comp_market = market_value_from_active_comps(
@@ -400,16 +502,20 @@ def run_scan() -> int:
                             if comp_market is not None:
                                 put_cached_market(state, fingerprint, comp_market)
                         except EbayBudgetExceeded:
+                            diag_budget_blocked = True
                             notes.append("eBay-Budget für weitere Preis-Comps ausgeschöpft")
                         except EbayError:
+                            diag_search_error = True
                             notes.append("Mindestens eine eBay-Preisvergleichssuche ist fehlgeschlagen")
 
         if (
             _market_needs_upgrade(market)
             and market_comp_calls < max_comp_calls
-            and preliminary_score(listing, priority_terms) >= listing_market_min_prelim
+            and prelim >= listing_market_min_prelim
         ):
             identity = listing_comp_identity(listing)
+            if identity is not None:
+                diag_identity_available = True
             target = listing.total_cost or listing.price
             if identity and target:
                 fingerprint = f"{listing_comp_fingerprint(identity)}|{target.currency.upper()}"
@@ -424,12 +530,15 @@ def run_scan() -> int:
                             if market_comp_calls >= max_comp_calls:
                                 break
                             rows = ebay.search(comp_query, limit=comp_search_limit, started_after=None, offset=0)
+                            diag_search_attempted = True
+                            diag_search_rows += len(rows)
                             market_comp_calls += 1
                             comp_rows.extend(rows)
                             values = exact_active_comps_for_listing(
                                 comp_rows, identity, target_currency=target.currency, fx=fx,
                                 exclude_item_id=listing.item_id,
                             )
+                            diag_exact_matches = max(diag_exact_matches, len(values))
                             if (
                                 len(values) < 3 and len(rows) >= comp_search_limit
                                 and market_comp_calls < max_comp_calls
@@ -438,12 +547,15 @@ def run_scan() -> int:
                                     comp_query, limit=comp_search_limit,
                                     started_after=None, offset=comp_search_limit,
                                 )
+                                diag_search_attempted = True
+                                diag_search_rows += len(rows2)
                                 market_comp_calls += 1
                                 comp_rows.extend(rows2)
                                 values = exact_active_comps_for_listing(
                                     comp_rows, identity, target_currency=target.currency, fx=fx,
                                     exclude_item_id=listing.item_id,
                                 )
+                                diag_exact_matches = max(diag_exact_matches, len(values))
                             if len(values) >= 3:
                                 break
                         listing_market = market_value_from_listing_comps(
@@ -453,8 +565,10 @@ def run_scan() -> int:
                         if listing_market is not None:
                             put_cached_market(state, fingerprint, listing_market)
                     except EbayBudgetExceeded:
+                        diag_budget_blocked = True
                         notes.append("eBay-Budget für weitere Listing-Preis-Comps ausgeschöpft")
                     except EbayError:
+                        diag_search_error = True
                         notes.append("Mindestens eine Listing-Preisvergleichssuche ist fehlgeschlagen")
 
         hit = score_hit(
@@ -467,6 +581,27 @@ def run_scan() -> int:
             priority_terms=priority_terms,
             demand_terms=list(settings.get("demand_terms") or []),
         )
+        gap_reason = _classify_price_gap(
+            hit.market_value,
+            target_available=diag_target is not None,
+            preliminary=prelim,
+            min_preliminary=listing_market_min_prelim,
+            identity_available=diag_identity_available,
+            search_attempted=diag_search_attempted,
+            search_rows=diag_search_rows,
+            exact_matches=diag_exact_matches,
+            budget_blocked=(
+                diag_budget_blocked
+                or (hit.market_value is None and market_comp_calls >= max_comp_calls)
+            ),
+            search_error=diag_search_error,
+        )
+        if gap_reason:
+            price_diag["OhnePreis"] += 1
+            price_diag[gap_reason] += 1
+        for key in _weak_market_diagnostics(hit.market_value):
+            price_diag[key] += 1
+
         scored.append(hit)
         mark_processed(state, listing.item_id, hit.score)
         if hit.score >= int(settings.get("dashboard_min_score", 7)):
@@ -504,6 +639,7 @@ def run_scan() -> int:
     verified_edges = sum(1 for row in scored if row.price_status == "verified_edge")
     candidate_api_successes = max(0, psa.api_successes - psa_api_success_baseline)
     notes.append(f"PSA API live: {_psa_status_label(psa_api_status)}")
+    notes.append(_price_diag_note(price_diag))
     notes.append(
         "Coverage: "
         f"Details={len(scored)}; Cert={cert_detected}; PSA={candidate_api_successes}; "
