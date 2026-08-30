@@ -52,9 +52,15 @@ class FakeRenaiss:
         self.calls_made = 0
         self.max_calls = 2
         self.rate_limited = False
+        self.cert_numbers = []
 
     def market_for_identity(self, identity, **kwargs):
         self.calls_made += 1
+        return RenaissMatch(self.market, "renaiss-item", None, None)
+
+    def market_for_cert(self, cert_number, **kwargs):
+        self.calls_made += 1
+        self.cert_numbers.append(cert_number)
         return RenaissMatch(self.market, "renaiss-item", None, None)
 
 
@@ -304,6 +310,8 @@ def test_repricing_uses_renaiss_psa10_fmv_before_active_asks():
     )
 
     assert result.renaiss_matches == 1
+    assert result.renaiss_cert_matches == 1
+    assert renaiss.cert_numbers == ["137178450"]
     assert result.improved == 1
     assert result.calls == 1
     assert ebay.queries == []

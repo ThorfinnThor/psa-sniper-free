@@ -267,3 +267,45 @@ class RenaissClient:
             fx=fx,
             max_sale_age_days=max_sale_age_days,
         )
+
+    def market_for_cert(
+        self,
+        cert_number: str,
+        *,
+        target_currency: str,
+        fx: FXRates,
+        identity: PricingIdentity | None = None,
+        max_sale_age_days: int = 365,
+    ) -> RenaissMatch | None:
+        """Resolve one exact PSA slab and return its card's PSA-10 FMV.
+
+        A trusted certificate is a stronger lookup key than a marketplace title.
+        The optional identity check remains deliberately strict so a disagreement
+        between the PSA/listing identity and Renaiss can never create a price.
+        """
+        expected = "".join(re.findall(r"\d+", str(cert_number or "")))
+        if len(expected) < 7:
+            raise RenaissError("Renaiss-Certnummer ist ungültig")
+        data = self._get(f"/v1/graded/PSA{expected}")
+        if not isinstance(data, dict):
+            raise RenaissError("Renaiss-Certantwort hat ein ungültiges Schema")
+        actual = "".join(re.findall(r"\d+", str(data.get("certNumber") or data.get("cert") or "")))
+        if actual != expected or str(data.get("company") or "").upper() != "PSA":
+            return None
+        if data.get("found") is not True:
+            return None
+        row_raw = data.get("card") or data.get("item")
+        if not isinstance(row_raw, dict):
+            return None
+        row = dict(row_raw)
+        row.setdefault("company", data.get("company"))
+        row.setdefault("grade", data.get("grade"))
+        row.setdefault("gradeLabel", data.get("gradeLabel"))
+        if identity is not None and not _result_matches_identity(row, identity):
+            return None
+        return market_from_renaiss_result(
+            row,
+            target_currency=target_currency,
+            fx=fx,
+            max_sale_age_days=max_sale_age_days,
+        )

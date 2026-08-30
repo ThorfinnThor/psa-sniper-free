@@ -85,6 +85,71 @@ def test_exact_result_creates_medium_psa10_market():
     assert client.calls_made == 1
 
 
+def test_trusted_cert_resolves_exact_psa10_market_without_text_search():
+    session = Session([
+        Response({
+            "cert": "PSA151238633",
+            "certNumber": "151238633",
+            "company": "PSA",
+            "found": True,
+            "grade": "10 Gem Mint",
+            "gradeLabel": "PSA 10",
+            "card": mew_result(),
+        })
+    ])
+    client = RenaissClient(session=session, max_calls=1)
+
+    match = client.market_for_cert(
+        "151238633",
+        identity=mew_identity(),
+        target_currency="EUR",
+        fx=IdentityFX(),
+    )
+
+    assert match is not None
+    assert match.market.money.value == pytest.approx(51.187)
+    assert session.calls[0][0].endswith("/v1/graded/PSA151238633")
+    assert session.calls[0][1]["params"] is None
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"certNumber": "999999999", "company": "PSA", "found": True, "card": mew_result()},
+        {"certNumber": "151238633", "company": "CGC", "found": True, "card": mew_result()},
+        {"certNumber": "151238633", "company": "PSA", "found": False, "card": mew_result()},
+        {"certNumber": "151238633", "company": "PSA", "found": True, "card": None},
+    ],
+)
+def test_cert_lookup_rejects_wrong_or_unresolved_certificate(payload):
+    client = RenaissClient(session=Session([Response(payload)]), max_calls=1)
+    assert client.market_for_cert(
+        "151238633",
+        identity=mew_identity(),
+        target_currency="EUR",
+        fx=IdentityFX(),
+    ) is None
+
+
+def test_cert_lookup_rejects_card_identity_disagreement():
+    client = RenaissClient(
+        session=Session([Response({
+            "certNumber": "151238633",
+            "company": "PSA",
+            "found": True,
+            "gradeLabel": "PSA 10",
+            "card": mew_result(cardNumber="106"),
+        })]),
+        max_calls=1,
+    )
+    assert client.market_for_cert(
+        "151238633",
+        identity=mew_identity(),
+        target_currency="EUR",
+        fx=IdentityFX(),
+    ) is None
+
+
 @pytest.mark.parametrize(
     "updates",
     [

@@ -696,6 +696,7 @@ def run_scan() -> int:
     psa_cache_upgrades = 0
     point130_matches = 0
     renaiss_matches = 0
+    renaiss_cert_matches = 0
     renaiss_cache_hits = 0
     renaiss_errors = 0
     price_diag = _new_price_diagnostics()
@@ -828,42 +829,99 @@ def run_scan() -> int:
     for candidate in price_candidates:
         if not _market_needs_upgrade(candidate.market):
             continue
-        identity = candidate.listing_identity
         target = candidate.listing.total_cost or candidate.listing.price
-        if identity is None or target is None:
+        cert_ready = bool(
+            candidate.cert
+            and candidate.cert.valid
+            and candidate.cert_market_safe
+            and is_psa10(candidate.cert.grade)
+        )
+        identity = (
+            pricing_identity_from_listing(candidate.listing, candidate.cert)
+            if cert_ready
+            else candidate.listing_identity
+        ) or candidate.listing_identity
+        if target is None or (identity is None and not cert_ready):
             continue
-        fingerprint = f"renaiss|{listing_comp_fingerprint(identity)}|{target.currency.upper()}"
-        cached, cached_market = get_cached_market(state, fingerprint, renaiss_cache_hours)
-        if cached and cached_market is not None:
-            candidate.market = _prefer_market_value(candidate.market, cached_market)
-            renaiss_cache_hits += 1
-            # A low-confidence FMV may still be upgraded with active eBay
-            # comps, but it must not consume another Renaiss call inside TTL.
-            continue
+        identity_fingerprint = (
+            f"renaiss|{listing_comp_fingerprint(identity)}|{target.currency.upper()}"
+            if identity is not None
+            else None
+        )
+        cert_fingerprint_value = (
+            f"renaiss|cert:{candidate.cert.cert_number}|{target.currency.upper()}"
+            if cert_ready and candidate.cert
+            else None
+        )
+
+        # A certificate miss must not poison the shared card identity, and an
+        # older text-search miss must not block a later exact certificate lookup.
+        if cert_fingerprint_value:
+            cached, cached_market = get_cached_market(
+                state,
+                cert_fingerprint_value,
+                renaiss_cache_hours,
+            )
+            if cached:
+                if cached_market is not None:
+                    candidate.market = _prefer_market_value(candidate.market, cached_market)
+                    renaiss_cache_hits += 1
+                continue
+        if identity_fingerprint:
+            cached, cached_market = get_cached_market(
+                state,
+                identity_fingerprint,
+                renaiss_cache_hours,
+            )
+            if cached and cached_market is not None:
+                candidate.market = _prefer_market_value(candidate.market, cached_market)
+                renaiss_cache_hits += 1
+                continue
+            if cached and not cert_ready:
+                continue
         if renaiss.calls_made >= renaiss.max_calls or renaiss.rate_limited:
             break
         try:
-            match = renaiss.market_for_identity(
-                identity,
-                target_currency=target.currency,
-                fx=fx,
-                max_sale_age_days=renaiss_max_sale_age_days,
-            )
+            if cert_ready and candidate.cert:
+                match = renaiss.market_for_cert(
+                    candidate.cert.cert_number,
+                    identity=identity,
+                    target_currency=target.currency,
+                    fx=fx,
+                    max_sale_age_days=renaiss_max_sale_age_days,
+                )
+            elif identity is not None:
+                match = renaiss.market_for_identity(
+                    identity,
+                    target_currency=target.currency,
+                    fx=fx,
+                    max_sale_age_days=renaiss_max_sale_age_days,
+                )
+            else:  # guarded above; keeps type checkers honest
+                continue
         except RenaissError:
             renaiss_errors += 1
             if renaiss.rate_limited:
                 break
             continue
+        query_fingerprint = cert_fingerprint_value or identity_fingerprint
         if match is None:
-            put_cached_market(state, fingerprint, None)
+            if query_fingerprint:
+                put_cached_market(state, query_fingerprint, None)
             continue
         candidate.market = _prefer_market_value(candidate.market, match.market)
-        put_cached_market(state, fingerprint, match.market)
+        for fingerprint in dict.fromkeys(
+            value for value in (cert_fingerprint_value, identity_fingerprint) if value
+        ):
+            put_cached_market(state, fingerprint, match.market)
         renaiss_matches += 1
+        if cert_ready:
+            renaiss_cert_matches += 1
 
     notes.append(
         "Renaiss Index: "
         f"{renaiss.calls_made} API-Call(s), {renaiss_matches} exakte PSA-10-FMV-Match(es), "
+        f"davon {renaiss_cert_matches} via PSA-Cert, "
         f"{renaiss_cache_hits} Cache-Treffer, {renaiss_errors} Fehler"
     )
     eligible_price_candidates = sum(

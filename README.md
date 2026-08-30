@@ -205,7 +205,7 @@ Das Secret überschreibt nur die angegebenen Werte aus `config/settings.json`.
 
 Rohkartenpreise von Cardmarket oder TCGplayer werden bewusst **nicht** als PSA-10-Marktwert verwendet. Primäre externe Preisquelle ist der dokumentierte Renaiss Index. Er modelliert einen PSA-10-Fair-Market-Value aus echten abgeschlossenen Verkäufen und liefert eine eigene Konfidenzstufe.
 
-Der Scanner sucht mit Subject, Setcode, Kartennummer, Sprache und `PSA 10`. Ein Preis wird nur übernommen, wenn genau ein Katalogeintrag alle bekannten Identitätsmerkmale erfüllt. `039/100` darf dabei mit der API-Kartennummer `39` übereinstimmen, aber nur zusammen mit identischem Subject, Set und Sprache. Mehrdeutige, falsche oder veraltete Ergebnisse werden verworfen.
+Bei einer vertrauenswürdig erkannten PSA-Zertifikatsnummer verwendet der Scanner zuerst den exakten Renaiss-Cert-Endpunkt. Certnummer, Grading-Unternehmen, Grade und Kartenidentität müssen dabei übereinstimmen. Nur ohne belastbares Cert sucht er mit Subject, Setcode, Kartennummer, Sprache und `PSA 10`. Ein Preis wird dann nur übernommen, wenn genau ein Katalogeintrag alle bekannten Identitätsmerkmale erfüllt. `039/100` darf dabei mit der API-Kartennummer `39` übereinstimmen, aber nur zusammen mit identischem Subject, Set und Sprache. Mehrdeutige, falsche oder veraltete Ergebnisse werden verworfen.
 
 - Public API: 10 Abfragen pro Tag und IP, keine Anmeldung nötig. Der 3-Stunden-Scanner nutzt deshalb höchstens eine neue Public-Abfrage pro Lauf und arbeitet sonst aus dem 24-Stunden-Cache.
 - Partner API: bis zu 10.000 Abfragen pro Tag mit `RENAISS_API_KEY` und `RENAISS_API_SECRET`.

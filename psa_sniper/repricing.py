@@ -64,6 +64,7 @@ class RepriceResult:
     comp_detail_errors: int = 0
     point130_matches: int = 0
     renaiss_matches: int = 0
+    renaiss_cert_matches: int = 0
     renaiss_cache_hits: int = 0
     renaiss_errors: int = 0
     secondary: list[ScoredHit] = field(default_factory=list)
@@ -574,18 +575,52 @@ def reprice_state(
         cert_values: list[Money] = []
         identity = _history_pricing_identity(old, listing)
 
-        if target and identity:
-            fingerprint = f"renaiss|{listing_comp_fingerprint(identity)}|{target.currency.upper()}"
-            cached, cached_market = get_cached_market(
-                state,
-                fingerprint,
-                int(settings.get("renaiss_cache_hours", 24)),
+        cert_ready = bool(
+            cert
+            and cert.valid
+            and is_psa10(cert.grade)
+            and _cert_safe_for_market(listing, cert_candidate, cert, trusted)
+        )
+        if target and (identity is not None or cert_ready):
+            cache_hours = int(settings.get("renaiss_cache_hours", 24))
+            identity_fingerprint = (
+                f"renaiss|{listing_comp_fingerprint(identity)}|{target.currency.upper()}"
+                if identity is not None
+                else None
             )
-            if cached and cached_market is not None:
-                selected = _prefer_market(market, cached_market)
-                if selected is not market:
-                    result.renaiss_cache_hits += 1
-                market = selected
+            cert_fingerprint_value = (
+                f"renaiss|cert:{cert.cert_number}|{target.currency.upper()}"
+                if cert_ready and cert
+                else None
+            )
+            cached = False
+            if cert_fingerprint_value:
+                cert_cached, cached_market = get_cached_market(
+                    state,
+                    cert_fingerprint_value,
+                    cache_hours,
+                )
+                if cert_cached:
+                    cached = True
+                    if cached_market is not None:
+                        selected = _prefer_market(market, cached_market)
+                        if selected is not market:
+                            result.renaiss_cache_hits += 1
+                        market = selected
+            if not cached and identity_fingerprint:
+                identity_cached, cached_market = get_cached_market(
+                    state,
+                    identity_fingerprint,
+                    cache_hours,
+                )
+                if identity_cached and cached_market is not None:
+                    cached = True
+                    selected = _prefer_market(market, cached_market)
+                    if selected is not market:
+                        result.renaiss_cache_hits += 1
+                    market = selected
+                elif identity_cached and not cert_ready:
+                    cached = True
             if (
                 renaiss is not None
                 and not cached
@@ -594,21 +629,41 @@ def reprice_state(
                 and not renaiss.rate_limited
             ):
                 try:
-                    match = renaiss.market_for_identity(
-                        identity,
-                        target_currency=target.currency,
-                        fx=fx,
-                        max_sale_age_days=int(settings.get("renaiss_max_sale_age_days", 365)),
-                    )
+                    if cert_ready and cert:
+                        match = renaiss.market_for_cert(
+                            cert.cert_number,
+                            identity=identity,
+                            target_currency=target.currency,
+                            fx=fx,
+                            max_sale_age_days=int(settings.get("renaiss_max_sale_age_days", 365)),
+                        )
+                    elif identity is not None:
+                        match = renaiss.market_for_identity(
+                            identity,
+                            target_currency=target.currency,
+                            fx=fx,
+                            max_sale_age_days=int(settings.get("renaiss_max_sale_age_days", 365)),
+                        )
+                    else:  # guarded above
+                        match = None
                 except RenaissError:
                     result.renaiss_errors += 1
                 else:
+                    query_fingerprint = cert_fingerprint_value or identity_fingerprint
                     if match is None:
-                        put_cached_market(state, fingerprint, None)
+                        if query_fingerprint:
+                            put_cached_market(state, query_fingerprint, None)
                     else:
                         market = _prefer_market(market, match.market)
-                        put_cached_market(state, fingerprint, match.market)
+                        for fingerprint in dict.fromkeys(
+                            value
+                            for value in (cert_fingerprint_value, identity_fingerprint)
+                            if value
+                        ):
+                            put_cached_market(state, fingerprint, match.market)
                         result.renaiss_matches += 1
+                        if cert_ready:
+                            result.renaiss_cert_matches += 1
 
         if target and imported_sales and identity:
             point130_market = point130_market_for_identity(
@@ -749,7 +804,7 @@ def _append_summary(result: RepriceResult, hit_count: int) -> None:
             f"{result.checked} geprüft, {result.improved} Preisquelle(n) verbessert, "
             f"{result.live_rechecks} live geprüft, {result.expired} beendet, "
             f"{result.live_errors} Live-Fehler, {len(result.secondary)} sekundär entdeckt, "
-            f"{result.renaiss_matches} Renaiss-Matches, "
+            f"{result.renaiss_matches} Renaiss-Matches ({result.renaiss_cert_matches} via PSA-Cert), "
             f"{result.comp_detail_calls} Comp-Details, {result.comp_detail_errors} Detailfehler, "
             f"{hit_count} Kauf-Hit(s), "
             f"{result.calls} zusätzliche eBay-Calls.\n"
@@ -841,6 +896,7 @@ def run_repricing_queue() -> int:
         latest["repricing_comp_detail_errors"] = result.comp_detail_errors
         latest["repricing_point130_matches"] = result.point130_matches
         latest["repricing_renaiss_matches"] = result.renaiss_matches
+        latest["repricing_renaiss_cert_matches"] = result.renaiss_cert_matches
         latest["repricing_renaiss_cache_hits"] = result.renaiss_cache_hits
         latest["repricing_renaiss_errors"] = result.renaiss_errors
         latest["secondary_candidates"] = len(result.secondary)
@@ -852,7 +908,8 @@ def run_repricing_queue() -> int:
             f"geprüft={result.checked}; verbessert={result.improved}; live={result.live_rechecks}; "
             f"beendet={result.expired}; LiveFehler={result.live_errors}; "
             f"CompDetails={result.comp_detail_calls}; Detailfehler={result.comp_detail_errors}; "
-            f"Renaiss={result.renaiss_matches}; RenaissCache={result.renaiss_cache_hits}; "
+            f"Renaiss={result.renaiss_matches}; RenaissCert={result.renaiss_cert_matches}; "
+            f"RenaissCache={result.renaiss_cache_hits}; "
             f"RenaissFehler={result.renaiss_errors}; "
             f"sekundär={len(result.secondary)}; Hits={len(repriced_hits)}; "
             f"eBayCalls={result.calls}"
@@ -870,7 +927,7 @@ def run_repricing_queue() -> int:
         f"{result.checked} geprüft, {result.improved} verbessert, {result.live_rechecks} live geprüft, "
         f"{result.expired} beendet, {result.live_errors} Live-Fehler, "
         f"{result.comp_detail_calls} Comp-Details, {result.comp_detail_errors} Detailfehler, "
-        f"{result.renaiss_matches} Renaiss-Matches, "
+        f"{result.renaiss_matches} Renaiss-Matches ({result.renaiss_cert_matches} via PSA-Cert), "
         f"{len(result.secondary)} sekundär entdeckt, {len(repriced_hits)} Hits, "
         f"{result.calls} eBay-Calls."
     )
