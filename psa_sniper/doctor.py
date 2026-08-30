@@ -11,6 +11,7 @@ from .ebay import EbayClient, EbayError
 from .ocr import ocr_enabled
 from .point130 import load_point130_sales
 from .psa_auth import normalize_psa_access_token
+from .renaiss import RenaissClient
 from .util import utc_now
 
 
@@ -99,28 +100,30 @@ def run_doctor(live: bool = False) -> tuple[list[Check], bool]:
     else:
         checks.append(Check("WARNUNG", "PSA API", "kein Token und Web-Fallback deaktiviert"))
 
-    try:
-        point130_sales = load_point130_sales()
-    except (OSError, ValueError, TypeError) as exc:
-        checks.append(Check("FEHLER", "130point Sold-Comps", str(exc)))
-        ok = False
+    renaiss = RenaissClient.from_env(max_calls=0)
+    if renaiss.authenticated:
+        checks.append(Check("OK", "Renaiss Index", "Partner-API konfiguriert; bis zu 10.000 Abfragen/Tag"))
+    elif renaiss.key_id or renaiss.secret:
+        checks.append(Check("WARNUNG", "Renaiss Index", "API-Key oder API-Secret unvollständig; Public-Tier aktiv"))
     else:
-        if point130_sales:
-            checks.append(
-                Check(
-                    "OK",
-                    "130point Sold-Comps",
-                    f"{len(point130_sales)} manuell verifizierte PSA-10-Verkäufe geladen",
-                )
-            )
+        checks.append(Check("INFO", "Renaiss Index", "Public-API aktiv; 10 Abfragen/Tag pro IP"))
+
+    if bool(settings.get("enable_point130_legacy", False)):
+        try:
+            point130_sales = load_point130_sales()
+        except (OSError, ValueError, TypeError) as exc:
+            checks.append(Check("FEHLER", "130point Legacy", str(exc)))
+            ok = False
         else:
             checks.append(
                 Check(
                     "INFO",
-                    "130point Sold-Comps",
-                    "noch keine Verkäufe importiert; automatische Abfrage bleibt deaktiviert",
+                    "130point Legacy",
+                    f"optional aktiviert; {len(point130_sales)} manuelle Verkäufe geladen",
                 )
             )
+    else:
+        checks.append(Check("INFO", "130point Legacy", "deaktiviert; nicht mehr Teil der Kernbewertung"))
 
     if live and client_id and client_secret:
         try:

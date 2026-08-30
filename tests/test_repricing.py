@@ -2,6 +2,7 @@ from datetime import timedelta
 
 from psa_sniper.models import Listing, MarketValue, Money
 from psa_sniper.point130 import parse_point130_sales
+from psa_sniper.renaiss import RenaissMatch
 from psa_sniper.repricing import _prefer_market, listing_from_history, reprice_state
 from psa_sniper.state import default_state
 from psa_sniper.util import iso_z, utc_now
@@ -43,6 +44,18 @@ class FakeEbay:
             created_at=utc_now() - timedelta(hours=2),
             buying_options=["FIXED_PRICE"],
         )
+
+
+class FakeRenaiss:
+    def __init__(self, market):
+        self.market = market
+        self.calls_made = 0
+        self.max_calls = 2
+        self.rate_limited = False
+
+    def market_for_identity(self, identity, **kwargs):
+        self.calls_made += 1
+        return RenaissMatch(self.market, "renaiss-item", None, None)
 
 
 def comp(item_id, price, seller):
@@ -265,6 +278,38 @@ def test_new_130point_comps_immediately_repair_and_reprice_recent_bad_identity()
     assert updated["pricing_identity"]["card_number"] == "039/100"
     assert updated["market_value"]["market_type"] == "point130_sold"
     assert updated["market_value"]["sample_size"] == 2
+
+
+def test_repricing_uses_renaiss_psa10_fmv_before_active_asks():
+    state = default_state()
+    state["history"] = [weak_row()]
+    renaiss_market = MarketValue(
+        Money(145, "EUR"),
+        "Renaiss Index · echte PSA-10-Verkäufe",
+        "mittel",
+        0,
+        market_type="renaiss_fmv",
+        required_edge=0.15,
+    )
+    renaiss = FakeRenaiss(renaiss_market)
+    ebay = FakeEbay([])
+
+    result = reprice_state(
+        state,
+        settings(),
+        ebay,
+        IdentityFX(),
+        max_comp_calls=6,
+        renaiss=renaiss,
+    )
+
+    assert result.renaiss_matches == 1
+    assert result.improved == 1
+    assert result.calls == 1
+    assert ebay.queries == []
+    updated = state["history"][0]
+    assert updated["market_value"]["market_type"] == "renaiss_fmv"
+    assert updated["price_status"] == "verified_edge"
 
 
 def test_repricing_backoff_skips_recent_price_check():

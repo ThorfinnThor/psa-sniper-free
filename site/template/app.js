@@ -305,7 +305,7 @@ function weakPriceExplanation(row) {
   const samples = Number(market.sample_size);
   const sellers = Number(market.unique_sellers);
   const dispersion = Number(market.dispersion);
-  if (Number.isFinite(samples)) {
+  if (Number.isFinite(samples) && market.market_type !== 'renaiss_fmv') {
     facts.push(samples === 1 ? '1 exakter Comp' : `${samples} exakte Comps`);
   }
   if (Number.isFinite(sellers)) {
@@ -315,6 +315,9 @@ function weakPriceExplanation(row) {
   if (market.market_type === 'point130_sold') {
     const evidence = facts.length ? ` ${facts.join(' · ')}.` : '';
     return `Preisquelle: ${source}.${evidence} Berücksichtigt werden ausschließlich manuell verifizierte, exakt passende PSA-10-Verkäufe. Für ein Kaufurteil werden mindestens zwei kohärente Verkäufe benötigt.`;
+  }
+  if (market.market_type === 'renaiss_fmv') {
+    return `Preisquelle: ${source}. Der Referenzwert basiert auf abgeschlossenen, exakt zugeordneten PSA-10-Verkäufen. Die Quellenkonfidenz ist ${market.confidence || 'unbekannt'}; niedrige Konfidenz bleibt eine Beobachtung.`;
   }
   if (market.market_type === 'ebay_active_provisional') {
     facts.push('Identität nur aus Listingdaten bestätigt');
@@ -444,16 +447,12 @@ function renderCard(row) {
     renderAll();
   });
   actions.append(ebay);
-  if (row.point130_query) {
-    const point130 = el('a', 'more-button', '130point Sold prüfen');
-    point130.href = 'https://130point.com/search?new=sold';
-    point130.target = '_blank';
-    point130.rel = 'noopener noreferrer';
-    point130.title = `Suchtext wird kopiert: ${row.point130_query}`;
-    point130.addEventListener('click', () => {
-      navigator.clipboard?.writeText(row.point130_query).catch(() => {});
-    });
-    actions.append(point130);
+  if (row.renaiss_query) {
+    const renaiss = el('a', 'more-button', 'Renaiss PSA-10-Preis');
+    renaiss.href = `https://index.renaissos.com/search?q=${encodeURIComponent(row.renaiss_query)}`;
+    renaiss.target = '_blank';
+    renaiss.rel = 'noopener noreferrer';
+    actions.append(renaiss);
   }
   actions.append(more);
   content.append(actions, statusButtons(row));
@@ -527,7 +526,7 @@ function renderDetails(row) {
     row.shipping ? `Preis ${money(row.price)} + Versand ${money(row.shipping)}` : `Preis: ${money(row.price)}`,
     row.returns_accepted == null ? 'Rückgabe: unbekannt' : `Rückgabe: ${row.returns_accepted ? 'akzeptiert' : 'nicht akzeptiert'}`,
     row.matched_queries?.length ? `Gefunden über ${row.matched_queries.length} Suchabfrage(n)` : null,
-    row.point130_query ? `130point-Suchtext: ${row.point130_query}` : null,
+    row.renaiss_query ? `Renaiss-Suchtext: ${row.renaiss_query}` : null,
   ].filter(Boolean);
   lines.forEach(line => box.append(el('div', '', line)));
   box.append(renderScoreBreakdown(row));

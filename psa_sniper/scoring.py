@@ -375,6 +375,7 @@ def score_hit(
     if not cert_trusted and market and market.market_type not in {
         "ebay_active_provisional",
         "point130_sold",
+        "renaiss_fmv",
     }:
         # Listing-basierte Quellen sind unabhängig von einer falschen Cert.
         # Exakt per Listing-Identität zugeordnete 130point-Verkäufe dürfen daher
@@ -470,6 +471,8 @@ def score_hit(
         if confidence == "niedrig":
             if market.market_type == "psa_estimate":
                 label = "Preisvergleich basiert nur auf PSA Estimate, nicht auf mehreren Sales"
+            elif market.market_type == "renaiss_fmv":
+                label = "Renaiss meldet geringe Konfidenz wegen dünner oder widersprüchlicher Verkaufsdaten"
             else:
                 label = "Preisvergleich basiert auf zu wenigen belastbaren Vergleichsangeboten"
             warnings.append(label)

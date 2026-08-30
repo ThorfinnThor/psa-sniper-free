@@ -30,6 +30,7 @@ from .market import (
 from .models import CertCandidate, Listing, MarketValue, Money, PSACertInfo, ScoredHit
 from .notify import configured_channels, notify
 from .point130 import Point130Sale, load_point130_sales, point130_market_for_identity
+from .renaiss import RenaissClient, RenaissError
 from .scoring import identity_overlap, is_psa10, score_hit
 from .state import (
     cert_from_dict,
@@ -62,6 +63,9 @@ class RepriceResult:
     comp_detail_calls: int = 0
     comp_detail_errors: int = 0
     point130_matches: int = 0
+    renaiss_matches: int = 0
+    renaiss_cache_hits: int = 0
+    renaiss_errors: int = 0
     secondary: list[ScoredHit] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
@@ -179,8 +183,9 @@ def _market_key(market: MarketValue | None) -> tuple[int, int, int, int]:
         return (0, 0, 0, 0)
     confidence_rank = {"hoch": 3, "mittel": 2, "niedrig": 1}
     source_rank = {
+        "psa_sales": 7,
+        "renaiss_fmv": 6,
         "point130_sold": 5,
-        "psa_sales": 4,
         "ebay_active": 3,
         "ebay_active_provisional": 2,
         "psa_estimate": 1,
@@ -237,6 +242,8 @@ def _refresh_minutes(row: dict[str, Any], settings: dict[str, Any]) -> int:
     if market_type == "psa_sales":
         return 24 * 60
     if market_type == "point130_sold":
+        return 24 * 60
+    if market_type == "renaiss_fmv":
         return 24 * 60
     return 6 * 60
 
@@ -481,6 +488,7 @@ def reprice_state(
     *,
     max_comp_calls: int,
     point130_sales: list[Point130Sale] | None = None,
+    renaiss: RenaissClient | None = None,
 ) -> RepriceResult:
     result = RepriceResult()
     if max_comp_calls <= 0:
@@ -565,6 +573,42 @@ def reprice_state(
         cert_comp_rows: list[Listing] = []
         cert_values: list[Money] = []
         identity = _history_pricing_identity(old, listing)
+
+        if target and identity:
+            fingerprint = f"renaiss|{listing_comp_fingerprint(identity)}|{target.currency.upper()}"
+            cached, cached_market = get_cached_market(
+                state,
+                fingerprint,
+                int(settings.get("renaiss_cache_hours", 24)),
+            )
+            if cached and cached_market is not None:
+                selected = _prefer_market(market, cached_market)
+                if selected is not market:
+                    result.renaiss_cache_hits += 1
+                market = selected
+            if (
+                renaiss is not None
+                and not cached
+                and (market is None or market.confidence.casefold() == "niedrig")
+                and renaiss.calls_made < renaiss.max_calls
+                and not renaiss.rate_limited
+            ):
+                try:
+                    match = renaiss.market_for_identity(
+                        identity,
+                        target_currency=target.currency,
+                        fx=fx,
+                        max_sale_age_days=int(settings.get("renaiss_max_sale_age_days", 365)),
+                    )
+                except RenaissError:
+                    result.renaiss_errors += 1
+                else:
+                    if match is None:
+                        put_cached_market(state, fingerprint, None)
+                    else:
+                        market = _prefer_market(market, match.market)
+                        put_cached_market(state, fingerprint, match.market)
+                        result.renaiss_matches += 1
 
         if target and imported_sales and identity:
             point130_market = point130_market_for_identity(
@@ -705,7 +749,7 @@ def _append_summary(result: RepriceResult, hit_count: int) -> None:
             f"{result.checked} geprüft, {result.improved} Preisquelle(n) verbessert, "
             f"{result.live_rechecks} live geprüft, {result.expired} beendet, "
             f"{result.live_errors} Live-Fehler, {len(result.secondary)} sekundär entdeckt, "
-            f"{result.point130_matches} 130point-Matches, "
+            f"{result.renaiss_matches} Renaiss-Matches, "
             f"{result.comp_detail_calls} Comp-Details, {result.comp_detail_errors} Detailfehler, "
             f"{hit_count} Kauf-Hit(s), "
             f"{result.calls} zusätzliche eBay-Calls.\n"
@@ -741,7 +785,19 @@ def run_repricing_queue() -> int:
     )
     fx = FXRates()
     fx.refresh()
-    point130_sales = load_point130_sales()
+    point130_sales = (
+        load_point130_sales()
+        if bool(settings.get("enable_point130_legacy", False))
+        else []
+    )
+    renaiss = RenaissClient.from_env(
+        max_calls=int(settings.get("max_renaiss_reprice_calls_per_run", 2)),
+    )
+    if not renaiss.authenticated:
+        renaiss.max_calls = min(
+            renaiss.max_calls,
+            int(settings.get("max_renaiss_public_reprice_calls_per_run", 0)),
+        )
     result = reprice_state(
         state,
         settings,
@@ -749,6 +805,7 @@ def run_repricing_queue() -> int:
         fx,
         max_comp_calls=queue_limit,
         point130_sales=point130_sales,
+        renaiss=renaiss,
     )
     if result.checked <= 0 and not result.secondary:
         return 0
@@ -783,6 +840,9 @@ def run_repricing_queue() -> int:
         latest["repricing_comp_detail_calls"] = result.comp_detail_calls
         latest["repricing_comp_detail_errors"] = result.comp_detail_errors
         latest["repricing_point130_matches"] = result.point130_matches
+        latest["repricing_renaiss_matches"] = result.renaiss_matches
+        latest["repricing_renaiss_cache_hits"] = result.renaiss_cache_hits
+        latest["repricing_renaiss_errors"] = result.renaiss_errors
         latest["secondary_candidates"] = len(result.secondary)
         latest["total_ebay_calls"] = previous_calls + result.calls
         notes = list(latest.get("notes") or [])
@@ -792,7 +852,8 @@ def run_repricing_queue() -> int:
             f"geprüft={result.checked}; verbessert={result.improved}; live={result.live_rechecks}; "
             f"beendet={result.expired}; LiveFehler={result.live_errors}; "
             f"CompDetails={result.comp_detail_calls}; Detailfehler={result.comp_detail_errors}; "
-            f"130point={result.point130_matches}; "
+            f"Renaiss={result.renaiss_matches}; RenaissCache={result.renaiss_cache_hits}; "
+            f"RenaissFehler={result.renaiss_errors}; "
             f"sekundär={len(result.secondary)}; Hits={len(repriced_hits)}; "
             f"eBayCalls={result.calls}"
         )
@@ -809,7 +870,7 @@ def run_repricing_queue() -> int:
         f"{result.checked} geprüft, {result.improved} verbessert, {result.live_rechecks} live geprüft, "
         f"{result.expired} beendet, {result.live_errors} Live-Fehler, "
         f"{result.comp_detail_calls} Comp-Details, {result.comp_detail_errors} Detailfehler, "
-        f"{result.point130_matches} 130point-Matches, "
+        f"{result.renaiss_matches} Renaiss-Matches, "
         f"{len(result.secondary)} sekundär entdeckt, {len(repriced_hits)} Hits, "
         f"{result.calls} eBay-Calls."
     )

@@ -12,6 +12,7 @@ from .identity import (
     pricing_identity_to_dict,
 )
 from .models import MarketValue, Money, PSACertInfo, RunStats, ScoredHit
+from .renaiss import build_renaiss_query
 from .util import iso_z, parse_iso_datetime, utc_now
 
 SCHEMA_VERSION = 6
@@ -406,6 +407,8 @@ def _market_cache_hours(data: dict[str, Any], configured_hours: int) -> int:
         return min(max(1, configured_hours), 4)
     if kind == "psa_sales":
         return max(configured_hours, 24)
+    if kind == "renaiss_fmv":
+        return max(configured_hours, 24)
     try:
         dispersion = float(data.get("dispersion")) if data.get("dispersion") is not None else None
     except (TypeError, ValueError):
@@ -425,7 +428,14 @@ def get_cached_market(
         return False, None
     data = row.get("data")
     if data is None:
-        effective_hours = min(max(1, max_age_hours), 1)
+        # A strict Renaiss identity miss is stable enough to cache for the
+        # configured window; otherwise the 10/day public quota would be spent
+        # on the same unsupported card every scanner run.
+        effective_hours = (
+            max(1, max_age_hours)
+            if fingerprint.startswith("renaiss|")
+            else min(max(1, max_age_hours), 1)
+        )
     elif isinstance(data, dict):
         effective_hours = _market_cache_hours(data, max_age_hours)
     else:
@@ -455,6 +465,7 @@ def hit_to_record(hit: ScoredHit, threshold: int) -> dict[str, Any]:
         hit.cert if hit.cert_trusted else None,
     )
     point130_queries = build_identity_queries(pricing_identity) if pricing_identity else []
+    renaiss_query = build_renaiss_query(pricing_identity) if pricing_identity else None
     return {
         "item_id": listing.item_id,
         "title": listing.title,
@@ -487,6 +498,7 @@ def hit_to_record(hit: ScoredHit, threshold: int) -> dict[str, Any]:
         "cert": _cert_dict(hit.cert),
         "pricing_identity": pricing_identity_to_dict(pricing_identity),
         "point130_query": point130_queries[0] if point130_queries else None,
+        "renaiss_query": renaiss_query,
         "market_value": _market_dict(hit.market_value),
         "discount_pct": hit.discount_pct,
         "availability_status": "active",

@@ -34,6 +34,7 @@ from .ocr import extract_cert_from_images, ocr_enabled
 from .point130 import load_point130_sales, point130_market_for_identity
 from .psa import PSABudgetExceeded, PSAClient, cert_needs_api_upgrade, merge_cert_info
 from .psa_auth import normalize_psa_access_token
+from .renaiss import RenaissClient, RenaissError
 from .report import write_reports
 from .scoring import (
     cert_identity_trust,
@@ -131,8 +132,9 @@ def _prefer_market_value(current: MarketValue | None, candidate: MarketValue | N
         return candidate
     confidence_rank = {"hoch": 3, "mittel": 2, "niedrig": 1}
     source_rank = {
+        "psa_sales": 7,
+        "renaiss_fmv": 6,
         "point130_sold": 5,
-        "psa_sales": 4,
         "ebay_active": 3,
         "ebay_active_provisional": 2,
         "psa_estimate": 1,
@@ -251,6 +253,8 @@ def _weak_market_diagnostics(market: MarketValue | None) -> list[str]:
             keys.append("SchwachComps")
         if market.dispersion is not None and float(market.dispersion) > 0.45:
             keys.append("SchwachStreuung")
+        return keys
+    if market.market_type == "renaiss_fmv":
         return keys
     if market.market_type not in {"ebay_active", "ebay_active_provisional"}:
         return keys
@@ -597,7 +601,20 @@ def run_scan() -> int:
 
     fx = FXRates()
     fx.refresh()
-    point130_sales = load_point130_sales()
+    point130_legacy_enabled = bool(settings.get("enable_point130_legacy", False))
+    point130_sales = (
+        load_point130_sales()
+        if point130_legacy_enabled
+        else []
+    )
+    renaiss = RenaissClient.from_env(
+        max_calls=int(settings.get("max_renaiss_calls_per_run", 8)),
+    )
+    if not renaiss.authenticated:
+        renaiss.max_calls = min(
+            renaiss.max_calls,
+            int(settings.get("max_renaiss_public_calls_per_run", 1)),
+        )
     window_minutes = int(settings.get("run_window_minutes", 75))
     started_after = utc_now() - timedelta(minutes=window_minutes)
     summaries: dict[str, Listing] = {}
@@ -678,6 +695,9 @@ def run_scan() -> int:
     psa_market_web_min_prelim = int(settings.get("psa_market_web_min_preliminary_score", 8))
     psa_cache_upgrades = 0
     point130_matches = 0
+    renaiss_matches = 0
+    renaiss_cache_hits = 0
+    renaiss_errors = 0
     price_diag = _new_price_diagnostics()
     demand_terms = list(settings.get("demand_terms") or [])
 
@@ -800,6 +820,52 @@ def run_scan() -> int:
     # Vergleichspreis-Budget in die Kandidaten mit der stärksten Identität und
     # dem höchsten Screening-Score – unabhängig von der Discovery-Reihenfolge.
     price_candidates.sort(key=_price_candidate_priority, reverse=True)
+
+    # Renaiss publishes a documented PSA-10 FMV derived from completed sales.
+    # Query it before spending eBay calls on active asking-price comparisons.
+    renaiss_cache_hours = int(settings.get("renaiss_cache_hours", 24))
+    renaiss_max_sale_age_days = int(settings.get("renaiss_max_sale_age_days", 365))
+    for candidate in price_candidates:
+        if not _market_needs_upgrade(candidate.market):
+            continue
+        identity = candidate.listing_identity
+        target = candidate.listing.total_cost or candidate.listing.price
+        if identity is None or target is None:
+            continue
+        fingerprint = f"renaiss|{listing_comp_fingerprint(identity)}|{target.currency.upper()}"
+        cached, cached_market = get_cached_market(state, fingerprint, renaiss_cache_hours)
+        if cached and cached_market is not None:
+            candidate.market = _prefer_market_value(candidate.market, cached_market)
+            renaiss_cache_hits += 1
+            # A low-confidence FMV may still be upgraded with active eBay
+            # comps, but it must not consume another Renaiss call inside TTL.
+            continue
+        if renaiss.calls_made >= renaiss.max_calls or renaiss.rate_limited:
+            break
+        try:
+            match = renaiss.market_for_identity(
+                identity,
+                target_currency=target.currency,
+                fx=fx,
+                max_sale_age_days=renaiss_max_sale_age_days,
+            )
+        except RenaissError:
+            renaiss_errors += 1
+            if renaiss.rate_limited:
+                break
+            continue
+        if match is None:
+            put_cached_market(state, fingerprint, None)
+            continue
+        candidate.market = _prefer_market_value(candidate.market, match.market)
+        put_cached_market(state, fingerprint, match.market)
+        renaiss_matches += 1
+
+    notes.append(
+        "Renaiss Index: "
+        f"{renaiss.calls_made} API-Call(s), {renaiss_matches} exakte PSA-10-FMV-Match(es), "
+        f"{renaiss_cache_hits} Cache-Treffer, {renaiss_errors} Fehler"
+    )
     eligible_price_candidates = sum(
         1
         for candidate in price_candidates
@@ -1049,9 +1115,9 @@ def run_scan() -> int:
         1 for row in scored
         if row.market_value and row.market_value.market_type in {"ebay_active", "ebay_active_provisional"}
     )
-    point130_prices = sum(
+    renaiss_prices = sum(
         1 for row in scored
-        if row.market_value and row.market_value.market_type == "point130_sold"
+        if row.market_value and row.market_value.market_type == "renaiss_fmv"
     )
     verified_edges = sum(1 for row in scored if row.price_status == "verified_edge")
     candidate_api_successes = max(0, psa.api_successes - psa_api_success_baseline)
@@ -1060,18 +1126,19 @@ def run_scan() -> int:
         notes.append("PSA API Hinweis: Token wurde nach Normalisierung abgelehnt; im PSA-Konto neu erzeugen")
     if psa_cache_upgrades:
         notes.append(f"PSA API Cache-Upgrades: {psa_cache_upgrades}")
-    notes.append(
-        "130point Sold-Comps: "
-        f"{len(point130_sales)} manuell verifizierte Verkäufe geladen; "
-        f"{point130_matches} Kandidaten-Match(es)"
-    )
+    if point130_legacy_enabled:
+        notes.append(
+            "130point Legacy: "
+            f"{len(point130_sales)} manuelle Verkäufe geladen; "
+            f"{point130_matches} Kandidaten-Match(es)"
+        )
     notes.append(_price_diag_note(price_diag))
     notes.append(
         "Coverage: "
         f"Details={len(scored)}; Cert={cert_detected}; PSA={candidate_api_successes}; "
         f"Verifiziert={cert_verified}; POP={pop_available}; Preis={price_indicators}; "
         f"eBayCompSuche={market_comp_calls}; eBayCompDetails={market_comp_detail_calls}; "
-        f"eBayCompPreis={ebay_comp_prices}; 130pointPreis={point130_prices}; Edge={verified_edges}"
+        f"eBayCompPreis={ebay_comp_prices}; RenaissPreis={renaiss_prices}; Edge={verified_edges}"
     )
 
     completed = utc_now()

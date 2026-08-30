@@ -59,6 +59,20 @@ def test_exact_130point_sold_market_outranks_active_asking_prices():
     assert _prefer_market_value(active, sold) is sold
 
 
+def test_renaiss_psa10_fmv_outranks_manual_and_active_sources():
+    renaiss = market(490, "Renaiss Index", "mittel", 0, "renaiss_fmv")
+    sold = market(500, "130point", "mittel", 2, "point130_sold")
+    active = market(520, "eBay", "mittel", 8, "ebay_active")
+    assert _prefer_market_value(active, renaiss) is renaiss
+    assert _prefer_market_value(sold, renaiss) is renaiss
+
+
+def test_official_psa_sales_remain_stronger_than_renaiss_at_same_confidence():
+    psa = market(500, "PSA ähnliche Verkäufe", "mittel", 2, "psa_sales")
+    renaiss = market(490, "Renaiss Index", "mittel", 0, "renaiss_fmv")
+    assert _prefer_market_value(psa, renaiss) is psa
+
+
 def test_price_gap_diagnoses_identity_and_search_losses():
     assert _classify_price_gap(
         None, target_available=True, preliminary=8, min_preliminary=7,

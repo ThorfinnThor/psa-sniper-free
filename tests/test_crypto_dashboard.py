@@ -136,8 +136,10 @@ def test_dashboard_build_contains_dynamic_market_quality_and_repricing_ui(tmp_pa
     assert "function weakPriceExplanation(row)" in app
     assert "Identität nur aus Listingdaten bestätigt" in app
     assert "eBayCompDetails" in app
-    assert "130point Sold prüfen" in app
+    assert "130point Sold prüfen" not in app
     assert "point130_sold" in app
+    assert "Renaiss PSA-10-Preis" in app
+    assert "renaiss_fmv" in app
     assert 'id="showAvailable"' in index
     assert 'class="chip active" data-view="all"' in index
     assert 'class="chip active" data-view="hits"' not in index

@@ -137,6 +137,8 @@ jobs:
       SEARCH_CONFIG_JSON: ${{ secrets.SEARCH_CONFIG_JSON }}
       SETTINGS_OVERRIDE_JSON: ${{ secrets.SETTINGS_OVERRIDE_JSON }}
       POINT130_SOLD_COMPS_JSON: ${{ secrets.POINT130_SOLD_COMPS_JSON }}
+      RENAISS_API_KEY: ${{ secrets.RENAISS_API_KEY }}
+      RENAISS_API_SECRET: ${{ secrets.RENAISS_API_SECRET }}
       ENABLE_OCR: ${{ vars.ENABLE_OCR }}
       STATE_PATH: data/state.json
       PRIVACY_MODE: "true"

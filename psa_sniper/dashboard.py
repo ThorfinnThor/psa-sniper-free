@@ -157,7 +157,7 @@ function marketDetail(market) {
     `Preisindikator: ${money(market.money)}`,
     market.source,
     `Vertrauen ${market.confidence}`,
-    market.sample_size != null ? `${market.sample_size} Comp(s)` : null,
+    market.sample_size != null && market.market_type !== 'renaiss_fmv' ? `${market.sample_size} Comp(s)` : null,
     market.unique_sellers != null ? `${market.unique_sellers} unabh. Verkäufer` : null,
     market.price_low != null && market.price_high != null
       ? `Spanne ${money({value: market.price_low, currency: market.money?.currency})}–${money({value: market.price_high, currency: market.money?.currency})}`
@@ -200,8 +200,8 @@ function renderCoverage() {
     ['Cert bestätigt', values.Verifiziert ?? '–', 'API · Cache · Web-Fallback'],
     ['POP vorhanden', values.POP ?? '–', 'Population erfolgreich verfügbar'],
     ['PSA Backfill', run?.psa_backfill_upgraded ?? 0, `${run?.psa_backfill_checked ?? 0} alte Cert(s) API-seitig geprüft`],
-    ['Preisindikator', values.Preis ?? '–', '130point Sold · PSA Sales · eBay Comps · Estimate'],
-    ['130point Sold', values['130pointPreis'] ?? 0, `${run?.repricing_point130_matches ?? 0} Repricing-Match(es)`],
+    ['Preisindikator', values.Preis ?? '–', 'Renaiss PSA-10 FMV · PSA Sales · eBay Comps'],
+    ['Renaiss PSA 10', values.RenaissPreis ?? 0, 'aus echten abgeschlossenen Verkäufen modelliert'],
     ['eBay Comp-Suchen', values.eBayCompSuche ?? '–', `${values.eBayCompPreis ?? 0} brauchbare Comp-Preis(e)`],
     ['Comp-Details', values.eBayCompDetails ?? 0, 'vollständige Daten für schwache Top-Comps nachgeladen'],
     ['Preisvorteil bestätigt', values.Edge ?? '–', 'je Preisquelle erforderliches Gate erfüllt'],
