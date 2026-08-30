@@ -918,12 +918,14 @@ def run_scan() -> int:
         if cert_ready:
             renaiss_cert_matches += 1
 
-    notes.append(
+    renaiss_note = (
         "Renaiss Index: "
         f"{renaiss.calls_made} API-Call(s), {renaiss_matches} exakte PSA-10-FMV-Match(es), "
         f"davon {renaiss_cert_matches} via PSA-Cert, "
         f"{renaiss_cache_hits} Cache-Treffer, {renaiss_errors} Fehler"
     )
+    notes.append(renaiss_note)
+    print(renaiss_note)
     eligible_price_candidates = sum(
         1
         for candidate in price_candidates
